@@ -16,6 +16,9 @@ import uuid
 st.set_page_config(page_title="Seguimiento de Préstamos", layout="wide")
 st.title("📌 Seguimiento de Préstamos (Google Sheets)")
 
+st.write("🔎 Keys en st.secrets:", list(st.secrets.keys()))
+st.write("🔎 GSPREAD_SHEET_NAME:", st.secrets.get("GSPREAD_SHEET_NAME"))
+
 # =========================
 # Google Sheets: conexión
 # =========================
