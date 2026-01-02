@@ -211,53 +211,70 @@ def semana_label(ws, we):
     return str(ws)
 
 
-def barh_with_labels_weekrange(df: pd.DataFrame, week_start_col: str, week_end_col: str, value_col: str, title: str):
+def barh_with_labels_weekrange(
+    df: pd.DataFrame,
+    week_start_col: str,
+    week_end_col: str,
+    value_col: str,
+    title: str,
+    title_size: int = 12,
+    axis_label_size: int = 11,
+    value_label_size: int = 10,
+    bar_height_factor: float = 0.45
+):
     """
     Barras horizontales rojas con valores blancos centrados.
     X = valores, Y = 'inicio → fin'
     """
+
     if df.empty:
         st.info("No hay datos para graficar.")
         return
 
     dd = df.copy()
 
-    # Orden cronológico por inicio, si existe; sino por fin
-    if week_start_col in dd.columns:
-        dd = dd.sort_values(week_start_col)
-    else:
-        dd = dd.sort_values(week_end_col)
+    # Orden cronológico
+    dd = dd.sort_values(week_start_col)
 
-    y_labels = [semana_label(ws, we) for ws, we in zip(dd[week_start_col], dd[week_end_col])]
+    y_labels = [
+        f"{ws.strftime('%d/%m/%Y')} → {we.strftime('%d/%m/%Y')}"
+        for ws, we in zip(dd[week_start_col], dd[week_end_col])
+    ]
     x_vals = pd.to_numeric(dd[value_col], errors="coerce").fillna(0).astype(int).tolist()
 
-    # Alto dinámico según cantidad de semanas
-    fig_h = max(3.4, 0.48 * len(dd))
-    fig, ax = plt.subplots(figsize=(9.5, fig_h))
+    # Altura dinámica según cantidad de semanas
+    fig_height = max(3.2, bar_height_factor * len(dd))
+    fig, ax = plt.subplots(figsize=(10, fig_height))
 
-    bars = ax.barh(y_labels, x_vals, color="#d60000")  # rojo
+    bars = ax.barh(y_labels, x_vals, color="#d60000")
 
-    ax.set_title(title)
-    ax.set_xlabel("")
-    ax.set_ylabel("")
+    # Título
+    ax.set_title(title, fontsize=title_size, pad=10)
 
-    # Valor centrado dentro de la barra (blanco)
+    # Tamaño de ejes
+    ax.tick_params(axis="x", labelsize=axis_label_size)
+    ax.tick_params(axis="y", labelsize=axis_label_size)
+
+    # Valores dentro de la barra
     for rect, val in zip(bars, x_vals):
         if val == 0:
             continue
         ax.text(
-            rect.get_width() / 2.0,
-            rect.get_y() + rect.get_height() / 2.0,
+            rect.get_width() / 2,
+            rect.get_y() + rect.get_height() / 2,
             f"{val}",
             ha="center",
             va="center",
             color="white",
-            fontsize=10,
-            fontweight="bold",
+            fontsize=value_label_size,
+            fontweight="bold"
         )
 
+    # Limpieza visual
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+
     fig.tight_layout()
     st.pyplot(fig)
 
@@ -945,13 +962,42 @@ elif page == pages[3]:
     st.dataframe(pretty_df(df_player, show_cols, hide_internal_ids=True), use_container_width=True, hide_index=True)
 
     st.markdown("### Tendencias")
-    # ✅ Uno debajo del otro
-    barh_with_labels_weekrange(df_player, "week_start", "week_end", "minutos", "Minutos por semana")
+
+
+    barh_with_labels_weekrange(
+        df_player,
+        "week_start",
+        "week_end",
+        "minutos",
+        "Minutos por semana",
+        title_size=11,
+        axis_label_size=11,
+        value_label_size=11
+        )
 
     if is_gk(str(j.get("puesto", ""))):
-        barh_with_labels_weekrange(df_player, "week_start", "week_end", "goles_encajados", "Goles encajados por semana")
+        barh_with_labels_weekrange(
+            df_player,
+            "week_start",
+            "week_end",
+            "goles_encajados",
+            "Goles encajados por semana",
+            title_size=11,
+            axis_label_size=11,
+            value_label_size=11
+        )
     else:
-        barh_with_labels_weekrange(df_player, "week_start", "week_end", "goles_marcados", "Goles por semana")
+        barh_with_labels_weekrange(
+            df_player,
+            "week_start",
+            "week_end",
+            "goles_marcados",
+            "Goles por semana",
+            title_size=12,
+            axis_label_size=11,
+            value_label_size=11
+        )
+
 
 # =========================
 # Página 5: Admin / export
