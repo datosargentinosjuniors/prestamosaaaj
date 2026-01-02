@@ -71,7 +71,9 @@ DISPLAY_LABELS = {
     "incidencias": "Incidencias",
     # Reportes
     "reporte_id": "ID reporte",
+    "titulo": "Título",
     "fecha_reporte": "Fecha del reporte",
+    "fecha_creacion": "Creado (fecha y hora)",
     "contenido": "Reporte",
     # Acumulados
     "partidos_total": "Partidos (total)",
@@ -103,7 +105,6 @@ REQUIRED_JUGADORES_COLS = [
     "updated_at",
 ]
 
-# ✅ Semana con inicio y fin
 REQUIRED_SEGUIMIENTO_COLS = [
     "registro_id",
     "jugador_id",
@@ -120,11 +121,13 @@ REQUIRED_SEGUIMIENTO_COLS = [
     "updated_at",
 ]
 
-# ✅ Reportes
+# ✅ Reportes (con título + fecha creación)
 REQUIRED_REPORTES_COLS = [
     "reporte_id",
     "jugador_id",
+    "titulo",
     "fecha_reporte",
+    "fecha_creacion",
     "contenido",
     "created_at",
     "updated_at",
@@ -151,6 +154,22 @@ def _parse_date_safe(x):
     try:
         out = pd.to_datetime(s, errors="coerce")
         return out.date() if not pd.isna(out) else pd.NaT
+    except Exception:
+        return pd.NaT
+
+
+def _parse_dt_safe(x):
+    """Parse de datetime tolerante (para fecha_creacion)."""
+    if x is None:
+        return pd.NaT
+    if isinstance(x, datetime):
+        return x
+    s = str(x).strip()
+    if s == "" or s.lower() in ["nat", "none"]:
+        return pd.NaT
+    try:
+        out = pd.to_datetime(s, errors="coerce")
+        return out if not pd.isna(out) else pd.NaT
     except Exception:
         return pd.NaT
 
@@ -195,7 +214,6 @@ def pretty_df(df: pd.DataFrame, cols: list, hide_internal_ids: bool = False) -> 
 
 
 def kpi_card(title: str, value: str):
-    """KPI compacto para que entren valores largos."""
     st.markdown(
         f"""
         <div style="
@@ -214,17 +232,6 @@ def kpi_card(title: str, value: str):
     )
 
 
-def semana_label(ws, we):
-    """Etiqueta 'dd/mm/yyyy → dd/mm/yyyy'."""
-    ws2 = ws if isinstance(ws, date) else _parse_date_safe(ws)
-    we2 = we if isinstance(we, date) else _parse_date_safe(we)
-    if isinstance(ws2, date) and isinstance(we2, date):
-        return f"{ws2.strftime('%d/%m/%Y')} → {we2.strftime('%d/%m/%Y')}"
-    if isinstance(ws2, date):
-        return ws2.strftime("%d/%m/%Y")
-    return str(ws)
-
-
 def barh_with_labels_weekrange(
     df: pd.DataFrame,
     week_start_col: str,
@@ -236,18 +243,11 @@ def barh_with_labels_weekrange(
     value_label_size: int = 10,
     bar_height_factor: float = 0.45
 ):
-    """
-    Barras horizontales rojas con valores blancos centrados.
-    X = valores, Y = 'inicio → fin'
-    """
     if df.empty:
         st.info("No hay datos para graficar.")
         return
 
-    dd = df.copy()
-    dd = dd.sort_values(week_start_col)
-
-    # Aseguro dates
+    dd = df.copy().sort_values(week_start_col)
     dd[week_start_col] = dd[week_start_col].apply(_parse_date_safe)
     dd[week_end_col] = dd[week_end_col].apply(_parse_date_safe)
 
@@ -259,7 +259,6 @@ def barh_with_labels_weekrange(
 
     fig_height = max(3.2, bar_height_factor * len(dd))
     fig, ax = plt.subplots(figsize=(10, fig_height))
-
     bars = ax.barh(y_labels, x_vals, color="#d60000")
 
     ax.set_title(title, fontsize=title_size, pad=10)
@@ -303,7 +302,6 @@ def get_workbook():
     if not SHEET_NAME:
         st.error("Falta configurar GSPREAD_SHEET_NAME en secrets")
         st.stop()
-
     gc = get_gspread_client()
     try:
         sh = gc.open(SHEET_NAME)
@@ -420,7 +418,6 @@ def normalizar_jugadores(df_j):
             .map({"true": True, "false": False, "1": True, "0": False, "si": True, "sí": True, "no": False})
             .fillna(False)
         )
-
     return df_j
 
 
@@ -436,7 +433,6 @@ def normalizar_seguimiento(df_s):
     for c in num_cols:
         if c in df_s.columns:
             df_s[c] = pd.to_numeric(df_s[c], errors="coerce").fillna(0).astype(int)
-
     return df_s
 
 
@@ -445,6 +441,8 @@ def normalizar_reportes(df_r):
         df_r = pd.DataFrame(columns=REQUIRED_REPORTES_COLS)
     if "fecha_reporte" in df_r.columns:
         df_r["fecha_reporte"] = df_r["fecha_reporte"].apply(_parse_date_safe)
+    if "fecha_creacion" in df_r.columns:
+        df_r["fecha_creacion"] = df_r["fecha_creacion"].apply(_parse_dt_safe)
     return df_r
 
 
@@ -467,12 +465,10 @@ def upsert_jugador(df_j, jugador_id, payload: dict):
     for c in REQUIRED_JUGADORES_COLS:
         if c not in df_new.columns:
             df_new[c] = ""
-    df_new = df_new[REQUIRED_JUGADORES_COLS]
-    return df_new
+    return df_new[REQUIRED_JUGADORES_COLS]
 
 
 def baja_jugador_soft(df_j: pd.DataFrame, jugador_id: str, motivo: str = "") -> pd.DataFrame:
-    """Marca el jugador como Rescindido."""
     df_new = df_j.copy()
     mask = df_new["jugador_id"].astype(str) == str(jugador_id)
     if not mask.any():
@@ -487,7 +483,6 @@ def baja_jugador_soft(df_j: pd.DataFrame, jugador_id: str, motivo: str = "") -> 
 
 
 def eliminar_jugador_hard(df_j: pd.DataFrame, df_s: pd.DataFrame, df_r: pd.DataFrame, jugador_id: str):
-    """Elimina definitivamente jugador + registros de seguimiento + reportes."""
     dfj = df_j[df_j["jugador_id"].astype(str) != str(jugador_id)].copy()
     dfs = df_s[df_s["jugador_id"].astype(str) != str(jugador_id)].copy()
     dfr = df_r[df_r["jugador_id"].astype(str) != str(jugador_id)].copy()
@@ -529,7 +524,7 @@ def make_excel_bytes(df_j: pd.DataFrame, df_s: pd.DataFrame, df_r: pd.DataFrame)
                 writer, index=False, sheet_name="Seguimiento (Vista)"
             )
 
-            cols_r_view = ["fecha_reporte", "contenido", "jugador_id", "reporte_id"]
+            cols_r_view = ["titulo", "fecha_reporte", "fecha_creacion", "contenido", "jugador_id", "reporte_id"]
             pretty_df(df_r_export, cols_r_view, hide_internal_ids=False).to_excel(
                 writer, index=False, sheet_name="Reportes (Vista)"
             )
@@ -575,7 +570,6 @@ if page == pages[0]:
 
     tab_crear, tab_editar = st.tabs(["Crear jugador", "Editar jugador"])
 
-    # ---------- CREAR ----------
     with tab_crear:
         st.markdown("### Crear jugador")
         with st.form("form_crear_jugador", clear_on_submit=True):
@@ -622,7 +616,6 @@ if page == pages[0]:
                     save_jugadores(df_new)
                     st.success("Jugador guardado ✅")
 
-    # ---------- EDITAR ----------
     with tab_editar:
         st.markdown("### Editar jugador")
 
@@ -727,7 +720,7 @@ if page == pages[0]:
 
             with col2:
                 st.markdown("**Eliminar definitivamente**")
-                st.caption("Esto borra al jugador, sus registros de seguimiento y sus reportes.")
+                st.caption("Esto borra al jugador, su seguimiento y sus reportes.")
                 confirm_text = st.text_input(
                     "Escribí ELIMINAR para confirmar",
                     key="confirm_eliminar",
@@ -854,8 +847,7 @@ elif page == pages[1]:
         st.info("Aún no hay cargas para este jugador.")
     else:
         df_player = normalizar_seguimiento(df_player)
-        sort_col = "week_start" if "week_start" in df_player.columns else "week_end"
-        df_player = df_player.sort_values(sort_col, ascending=False)
+        df_player = df_player.sort_values("week_start", ascending=False)
 
         show_cols = [
             "week_start", "week_end",
@@ -972,10 +964,7 @@ elif page == pages[3]:
     with c5:
         kpi_card("Fin de contrato en AAAJ", str(j.get("fin_contrato_aaaj", "")))
     with c6:
-        kpi_card(
-            "¿Tiene opción de compra?",
-            "Sí" if bool(j.get("opcion_compra", False)) else "No"
-        )
+        kpi_card("¿Tiene opción de compra?", "Sí" if bool(j.get("opcion_compra", False)) else "No")
 
     if str(j.get("observaciones", "")).strip():
         st.info(f"**Observaciones:** {str(j.get('observaciones',''))}")
@@ -987,7 +976,7 @@ elif page == pages[3]:
         st.warning("Este jugador aún no tiene cargas semanales.")
         st.stop()
 
-    df_player = df_player.sort_values("week_start" if "week_start" in df_player.columns else "week_end")
+    df_player = df_player.sort_values("week_start")
 
     show_cols = [
         "week_start", "week_end",
@@ -1002,37 +991,22 @@ elif page == pages[3]:
     st.markdown("### Tendencias")
 
     barh_with_labels_weekrange(
-        df_player,
-        "week_start",
-        "week_end",
-        "minutos",
+        df_player, "week_start", "week_end", "minutos",
         "Minutos por semana",
-        title_size=11,
-        axis_label_size=11,
-        value_label_size=11
+        title_size=11, axis_label_size=11, value_label_size=11
     )
 
     if is_gk(str(j.get("puesto", ""))):
         barh_with_labels_weekrange(
-            df_player,
-            "week_start",
-            "week_end",
-            "goles_encajados",
+            df_player, "week_start", "week_end", "goles_encajados",
             "Goles encajados por semana",
-            title_size=11,
-            axis_label_size=11,
-            value_label_size=11
+            title_size=11, axis_label_size=11, value_label_size=11
         )
     else:
         barh_with_labels_weekrange(
-            df_player,
-            "week_start",
-            "week_end",
-            "goles_marcados",
+            df_player, "week_start", "week_end", "goles_marcados",
             "Goles por semana",
-            title_size=12,
-            axis_label_size=11,
-            value_label_size=11
+            title_size=12, axis_label_size=11, value_label_size=11
         )
 
 # =========================
@@ -1067,32 +1041,55 @@ elif page == pages[4]:
     if df_rep.empty:
         st.info("Este jugador aún no tiene reportes.")
     else:
-        df_rep = df_rep.sort_values("fecha_reporte", ascending=False)
+        # orden por fecha_creacion si está, sino por fecha_reporte
+        if "fecha_creacion" in df_rep.columns and df_rep["fecha_creacion"].notna().any():
+            df_rep = df_rep.sort_values("fecha_creacion", ascending=False)
+        else:
+            df_rep = df_rep.sort_values("fecha_reporte", ascending=False)
+
         for _, r in df_rep.iterrows():
-            fecha_txt = r["fecha_reporte"].strftime("%d/%m/%Y") if isinstance(r["fecha_reporte"], date) else str(r["fecha_reporte"])
-            with st.expander(f"📄 {fecha_txt}"):
+            titulo = str(r.get("titulo", "")).strip() or "Reporte"
+            f_rep = r.get("fecha_reporte", pd.NaT)
+            f_crea = r.get("fecha_creacion", pd.NaT)
+
+            fecha_line = ""
+            if isinstance(f_rep, date):
+                fecha_line += f"Fecha: {f_rep.strftime('%d/%m/%Y')}"
+            if isinstance(f_crea, datetime):
+                fecha_line += (" | " if fecha_line else "") + f"Creado: {f_crea.strftime('%d/%m/%Y %H:%M')}"
+
+            header = f"📄 {titulo}"
+            if fecha_line:
+                header += f" — {fecha_line}"
+
+            with st.expander(header):
                 st.write(str(r.get("contenido", "")))
 
     st.markdown("---")
     st.markdown("### ➕ Nuevo reporte")
 
     with st.form("form_nuevo_reporte", clear_on_submit=True):
+        titulo = st.text_input("Título del reporte", placeholder="Ej: Informe mensual - Enero / Observación técnica / etc.")
         contenido = st.text_area(
             "Escribir reporte",
-            height=220,
+            height=240,
             placeholder="Observaciones técnicas, físicas, actitudinales, evolución, etc."
         )
 
         submit = st.form_submit_button("💾 Guardar reporte")
         if submit:
-            if not contenido.strip():
+            if not titulo.strip():
+                st.error("El título no puede estar vacío.")
+            elif not contenido.strip():
                 st.error("El reporte no puede estar vacío.")
             else:
                 now = hoy_str()
                 new_row = {
                     "reporte_id": str(uuid.uuid4()),
                     "jugador_id": str(jugador_id),
+                    "titulo": titulo.strip(),
                     "fecha_reporte": date.today(),
+                    "fecha_creacion": now,  # timestamp (string)
                     "contenido": contenido.strip(),
                     "created_at": now,
                     "updated_at": now,
@@ -1158,4 +1155,3 @@ else:
         file_name="prestamos_aaaj.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
