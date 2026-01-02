@@ -393,15 +393,15 @@ if page == pages[0]:
     with tab_crear:
         st.markdown("### Crear jugador")
         with st.form("form_crear_jugador", clear_on_submit=True):
-            nombre = st.text_input("Nombre")
+            nombre = st.text_input("Nombre", placeholder="Escribe nombre del jugador.")
             puesto = st.selectbox("Puesto", PUESTOS)
-            fecha_nac = st.date_input("Fecha de nacimiento", value=date(2000, 1, 1))
+            fecha_nac = st.date_input("Fecha de nacimiento")
 
-            pais = st.text_input("País (préstamo)")
+            pais = st.text_input("País (préstamo)", placeholder="País en donde jugará el jugador.")
             division = st.selectbox("División", DIVISIONES, index=0)
-            club_prestamo = st.text_input("Club (préstamo)", placeholder="Ej: Club X")
+            club_prestamo = st.text_input("Club (préstamo)", placeholder="Escribe el club en el que está a prestamo.")
 
-            opcion_compra = st.checkbox("Tiene opción de compra")
+            opcion_compra = st.checkbox("¿Tiene opción de compra?")
             fecha_retorno = st.date_input("Fecha de retorno", value=date.today() + relativedelta(months=6))
             fin_contrato = st.date_input("Fin de contrato con AAAJ", value=date.today() + relativedelta(years=2))
             estado = st.selectbox("Estado", ["Activo", "Finalizado", "Rescindido"])
