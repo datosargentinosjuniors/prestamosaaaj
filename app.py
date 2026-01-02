@@ -391,7 +391,7 @@ if page == pages[0]:
 
     # ---------- CREAR ----------
     with tab_crear:
-        st.markdown("### Crear jugador (se guarda al enviar)")
+        st.markdown("### Crear jugador")
         with st.form("form_crear_jugador", clear_on_submit=True):
             nombre = st.text_input("Nombre", placeholder="Ej: Juan Pérez")
             puesto = st.selectbox("Puesto", PUESTOS)
@@ -432,7 +432,7 @@ if page == pages[0]:
 
     # ---------- EDITAR ----------
     with tab_editar:
-        st.markdown("### Editar jugador (se guarda al enviar)")
+        st.markdown("### Editar jugador")
 
         if df_j.empty:
             st.info("Todavía no hay jugadores cargados.")
@@ -527,7 +527,7 @@ if page == pages[0]:
                     st.info("Actualizá la página o elegí otro jugador en el selector.")
 
     st.markdown("---")
-    st.markdown("### Tabla de jugadores (visualización)")
+    st.markdown("### Tabla de jugadores")
     st.caption("Esta tabla es solo para ver/filtrar. Para editar, usá el tab de **Editar jugador** (arriba).")
 
     df_view = normalizar_jugadores(df_j.copy())
