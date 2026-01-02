@@ -904,7 +904,7 @@ elif page == pages[3]:
     jugador_id = label_to_id[jugador_label]
     j = df_j2[df_j2["jugador_id"].astype(str) == str(jugador_id)].iloc[0]
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(5)
     with c1:
         kpi_card("Puesto", str(j.get("puesto", "")))
     with c2:
@@ -914,9 +914,9 @@ elif page == pages[3]:
     with c4:
         kpi_card("Fecha de retorno", str(j.get("fecha_retorno", "")))
     with c5:
-        kpi_card("Fin de contrato en AAAJ", "str(j.get("fin_contrato_aaaj", "")))
-
-    st.write("**Opción de compra:**", "Sí" if bool(j.get("opcion_compra", False)) else "No")
+        kpi_card("Fin de contrato en AAAJ", str(j.get("fin_contrato_aaaj", "")))
+    with c6:
+        kpi_card("Tiene opción de compra?", "Sí" if bool(j.get("opcion_compra", False)) else "No", "")))
                  
     if str(j.get("observaciones", "")).strip():
         st.info(f"**Observaciones:** {str(j.get('observaciones',''))}")
