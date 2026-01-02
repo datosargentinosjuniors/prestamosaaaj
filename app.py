@@ -69,6 +69,10 @@ DISPLAY_LABELS = {
     "amarillas": "Amarillas",
     "rojas": "Rojas",
     "incidencias": "Incidencias",
+    # Reportes
+    "reporte_id": "ID reporte",
+    "fecha_reporte": "Fecha del reporte",
+    "contenido": "Reporte",
     # Acumulados
     "partidos_total": "Partidos (total)",
     "minutos_total": "Minutos (total)",
@@ -112,6 +116,16 @@ REQUIRED_SEGUIMIENTO_COLS = [
     "amarillas",
     "rojas",
     "incidencias",
+    "created_at",
+    "updated_at",
+]
+
+# ✅ Reportes
+REQUIRED_REPORTES_COLS = [
+    "reporte_id",
+    "jugador_id",
+    "fecha_reporte",
+    "contenido",
     "created_at",
     "updated_at",
 ]
@@ -169,7 +183,7 @@ def is_gk(puesto: str) -> bool:
 def pretty_df(df: pd.DataFrame, cols: list, hide_internal_ids: bool = False) -> pd.DataFrame:
     cols2 = cols.copy()
     if hide_internal_ids:
-        cols2 = [c for c in cols2 if c not in ["jugador_id", "registro_id"]]
+        cols2 = [c for c in cols2 if c not in ["jugador_id", "registro_id", "reporte_id"]]
 
     out = df.copy()
     for c in cols2:
@@ -226,15 +240,16 @@ def barh_with_labels_weekrange(
     Barras horizontales rojas con valores blancos centrados.
     X = valores, Y = 'inicio → fin'
     """
-
     if df.empty:
         st.info("No hay datos para graficar.")
         return
 
     dd = df.copy()
-
-    # Orden cronológico
     dd = dd.sort_values(week_start_col)
+
+    # Aseguro dates
+    dd[week_start_col] = dd[week_start_col].apply(_parse_date_safe)
+    dd[week_end_col] = dd[week_end_col].apply(_parse_date_safe)
 
     y_labels = [
         f"{ws.strftime('%d/%m/%Y')} → {we.strftime('%d/%m/%Y')}"
@@ -242,20 +257,15 @@ def barh_with_labels_weekrange(
     ]
     x_vals = pd.to_numeric(dd[value_col], errors="coerce").fillna(0).astype(int).tolist()
 
-    # Altura dinámica según cantidad de semanas
     fig_height = max(3.2, bar_height_factor * len(dd))
     fig, ax = plt.subplots(figsize=(10, fig_height))
 
     bars = ax.barh(y_labels, x_vals, color="#d60000")
 
-    # Título
     ax.set_title(title, fontsize=title_size, pad=10)
-
-    # Tamaño de ejes
     ax.tick_params(axis="x", labelsize=axis_label_size)
     ax.tick_params(axis="y", labelsize=axis_label_size)
 
-    # Valores dentro de la barra
     for rect, val in zip(bars, x_vals):
         if val == 0:
             continue
@@ -270,7 +280,6 @@ def barh_with_labels_weekrange(
             fontweight="bold"
         )
 
-    # Limpieza visual
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_visible(False)
@@ -341,7 +350,8 @@ def init_sheets():
     sh = get_workbook()
     ws_j = _get_or_create_worksheet(sh, "jugadores", REQUIRED_JUGADORES_COLS)
     ws_s = _get_or_create_worksheet(sh, "seguimiento", REQUIRED_SEGUIMIENTO_COLS)
-    return ws_j, ws_s
+    ws_r = _get_or_create_worksheet(sh, "reportes", REQUIRED_REPORTES_COLS)
+    return ws_j, ws_s, ws_r
 
 
 def _ws_to_df(ws):
@@ -367,21 +377,28 @@ def _df_to_ws_overwrite(ws, df, cols):
 
 @st.cache_data(ttl=30)
 def load_data():
-    ws_j, ws_s = init_sheets()
+    ws_j, ws_s, ws_r = init_sheets()
     df_j = _ws_to_df(ws_j)
     df_s = _ws_to_df(ws_s)
-    return df_j, df_s
+    df_r = _ws_to_df(ws_r)
+    return df_j, df_s, df_r
 
 
 def save_jugadores(df_j):
-    ws_j, _ = init_sheets()
+    ws_j, _, _ = init_sheets()
     _df_to_ws_overwrite(ws_j, df_j, REQUIRED_JUGADORES_COLS)
     st.cache_data.clear()
 
 
 def save_seguimiento(df_s):
-    _, ws_s = init_sheets()
+    _, ws_s, _ = init_sheets()
     _df_to_ws_overwrite(ws_s, df_s, REQUIRED_SEGUIMIENTO_COLS)
+    st.cache_data.clear()
+
+
+def save_reportes(df_r):
+    _, _, ws_r = init_sheets()
+    _df_to_ws_overwrite(ws_r, df_r, REQUIRED_REPORTES_COLS)
     st.cache_data.clear()
 
 
@@ -423,6 +440,14 @@ def normalizar_seguimiento(df_s):
     return df_s
 
 
+def normalizar_reportes(df_r):
+    if df_r.empty:
+        df_r = pd.DataFrame(columns=REQUIRED_REPORTES_COLS)
+    if "fecha_reporte" in df_r.columns:
+        df_r["fecha_reporte"] = df_r["fecha_reporte"].apply(_parse_date_safe)
+    return df_r
+
+
 def upsert_jugador(df_j, jugador_id, payload: dict):
     df_new = df_j.copy()
     if (df_new["jugador_id"].astype(str) == str(jugador_id)).any():
@@ -461,24 +486,27 @@ def baja_jugador_soft(df_j: pd.DataFrame, jugador_id: str, motivo: str = "") -> 
     return df_new
 
 
-def eliminar_jugador_hard(df_j: pd.DataFrame, df_s: pd.DataFrame, jugador_id: str):
-    """Elimina definitivamente jugador + registros de seguimiento."""
+def eliminar_jugador_hard(df_j: pd.DataFrame, df_s: pd.DataFrame, df_r: pd.DataFrame, jugador_id: str):
+    """Elimina definitivamente jugador + registros de seguimiento + reportes."""
     dfj = df_j[df_j["jugador_id"].astype(str) != str(jugador_id)].copy()
     dfs = df_s[df_s["jugador_id"].astype(str) != str(jugador_id)].copy()
-    return dfj, dfs
+    dfr = df_r[df_r["jugador_id"].astype(str) != str(jugador_id)].copy()
+    return dfj, dfs, dfr
 
 
 # =========================
 # Export Excel (XLSX)
 # =========================
-def make_excel_bytes(df_j: pd.DataFrame, df_s: pd.DataFrame) -> bytes:
+def make_excel_bytes(df_j: pd.DataFrame, df_s: pd.DataFrame, df_r: pd.DataFrame) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_j_export = df_j.copy()
         df_s_export = df_s.copy()
+        df_r_export = df_r.copy()
 
         df_j_export.to_excel(writer, index=False, sheet_name="Jugadores")
         df_s_export.to_excel(writer, index=False, sheet_name="Seguimiento")
+        df_r_export.to_excel(writer, index=False, sheet_name="Reportes")
 
         try:
             cols_j_view = [
@@ -500,6 +528,11 @@ def make_excel_bytes(df_j: pd.DataFrame, df_s: pd.DataFrame) -> bytes:
             pretty_df(df_s_export, cols_s_view, hide_internal_ids=False).to_excel(
                 writer, index=False, sheet_name="Seguimiento (Vista)"
             )
+
+            cols_r_view = ["fecha_reporte", "contenido", "jugador_id", "reporte_id"]
+            pretty_df(df_r_export, cols_r_view, hide_internal_ids=False).to_excel(
+                writer, index=False, sheet_name="Reportes (Vista)"
+            )
         except Exception:
             pass
 
@@ -514,13 +547,15 @@ pages = [
     "🗓️ Carga Semanal",
     "📊 Tabla Acumulada",
     "👤 Vista Individual",
+    "📝 Reportes",
     "⚙️ Administración / Export",
 ]
 page = st.sidebar.radio("Navegación", pages)
 
-df_j_raw, df_s_raw = load_data()
+df_j_raw, df_s_raw, df_r_raw = load_data()
 df_j = normalizar_jugadores(df_j_raw)
 df_s = normalizar_seguimiento(df_s_raw)
+df_r = normalizar_reportes(df_r_raw)
 
 for c in REQUIRED_JUGADORES_COLS:
     if c not in df_j.columns:
@@ -528,6 +563,9 @@ for c in REQUIRED_JUGADORES_COLS:
 for c in REQUIRED_SEGUIMIENTO_COLS:
     if c not in df_s.columns:
         df_s[c] = ""
+for c in REQUIRED_REPORTES_COLS:
+    if c not in df_r.columns:
+        df_r[c] = ""
 
 # =========================
 # Página 1: Jugadores
@@ -689,7 +727,7 @@ if page == pages[0]:
 
             with col2:
                 st.markdown("**Eliminar definitivamente**")
-                st.caption("Esto borra al jugador y todos sus registros de seguimiento.")
+                st.caption("Esto borra al jugador, sus registros de seguimiento y sus reportes.")
                 confirm_text = st.text_input(
                     "Escribí ELIMINAR para confirmar",
                     key="confirm_eliminar",
@@ -700,10 +738,11 @@ if page == pages[0]:
                     type="primary",
                     disabled=(confirm_text.strip().upper() != "ELIMINAR")
                 ):
-                    dfj_new, dfs_new = eliminar_jugador_hard(df_j, df_s, jugador_id)
+                    dfj_new, dfs_new, dfr_new = eliminar_jugador_hard(df_j, df_s, df_r, jugador_id)
                     save_jugadores(dfj_new)
                     save_seguimiento(dfs_new)
-                    st.success("Jugador y registros eliminados ✅")
+                    save_reportes(dfr_new)
+                    st.success("Jugador, seguimiento y reportes eliminados ✅")
                     st.info("Actualizá la página o elegí otro jugador en el selector.")
 
     st.markdown("---")
@@ -934,10 +973,10 @@ elif page == pages[3]:
         kpi_card("Fin de contrato en AAAJ", str(j.get("fin_contrato_aaaj", "")))
     with c6:
         kpi_card(
-        "¿Tiene opción de compra?",
-        "Sí" if bool(j.get("opcion_compra", False)) else "No"
+            "¿Tiene opción de compra?",
+            "Sí" if bool(j.get("opcion_compra", False)) else "No"
         )
-       
+
     if str(j.get("observaciones", "")).strip():
         st.info(f"**Observaciones:** {str(j.get('observaciones',''))}")
 
@@ -948,7 +987,6 @@ elif page == pages[3]:
         st.warning("Este jugador aún no tiene cargas semanales.")
         st.stop()
 
-    # Orden cronológico
     df_player = df_player.sort_values("week_start" if "week_start" in df_player.columns else "week_end")
 
     show_cols = [
@@ -963,7 +1001,6 @@ elif page == pages[3]:
 
     st.markdown("### Tendencias")
 
-
     barh_with_labels_weekrange(
         df_player,
         "week_start",
@@ -973,7 +1010,7 @@ elif page == pages[3]:
         title_size=11,
         axis_label_size=11,
         value_label_size=11
-        )
+    )
 
     if is_gk(str(j.get("puesto", ""))):
         barh_with_labels_weekrange(
@@ -998,9 +1035,74 @@ elif page == pages[3]:
             value_label_size=11
         )
 
+# =========================
+# Página 5: Reportes
+# =========================
+elif page == pages[4]:
+    st.subheader("📝 Reportes")
+
+    if df_j.empty:
+        st.warning("No hay jugadores.")
+        st.stop()
+
+    dfj2 = normalizar_jugadores(df_j.copy())
+    dfj2["label"] = (
+        dfj2["nombre"].astype(str)
+        + " — "
+        + dfj2["club_prestamo"].astype(str)
+        + " ("
+        + dfj2["puesto"].astype(str)
+        + ")"
+    )
+    label_to_id = dict(zip(dfj2["label"], dfj2["jugador_id"]))
+
+    jugador_label = st.selectbox("Jugador", dfj2["label"].tolist())
+    jugador_id = label_to_id[jugador_label]
+
+    st.markdown("### Reportes existentes")
+
+    df_rep = df_r[df_r["jugador_id"].astype(str) == str(jugador_id)].copy()
+    df_rep = normalizar_reportes(df_rep)
+
+    if df_rep.empty:
+        st.info("Este jugador aún no tiene reportes.")
+    else:
+        df_rep = df_rep.sort_values("fecha_reporte", ascending=False)
+        for _, r in df_rep.iterrows():
+            fecha_txt = r["fecha_reporte"].strftime("%d/%m/%Y") if isinstance(r["fecha_reporte"], date) else str(r["fecha_reporte"])
+            with st.expander(f"📄 {fecha_txt}"):
+                st.write(str(r.get("contenido", "")))
+
+    st.markdown("---")
+    st.markdown("### ➕ Nuevo reporte")
+
+    with st.form("form_nuevo_reporte", clear_on_submit=True):
+        contenido = st.text_area(
+            "Escribir reporte",
+            height=220,
+            placeholder="Observaciones técnicas, físicas, actitudinales, evolución, etc."
+        )
+
+        submit = st.form_submit_button("💾 Guardar reporte")
+        if submit:
+            if not contenido.strip():
+                st.error("El reporte no puede estar vacío.")
+            else:
+                now = hoy_str()
+                new_row = {
+                    "reporte_id": str(uuid.uuid4()),
+                    "jugador_id": str(jugador_id),
+                    "fecha_reporte": date.today(),
+                    "contenido": contenido.strip(),
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                df_r_new = pd.concat([df_r, pd.DataFrame([new_row])], ignore_index=True)
+                save_reportes(df_r_new)
+                st.success("Reporte guardado ✅")
 
 # =========================
-# Página 5: Admin / export
+# Página 6: Admin / export
 # =========================
 else:
     st.subheader("⚙️ Administración / Export")
@@ -1049,10 +1151,11 @@ else:
     st.markdown("---")
     st.markdown("### Export (Excel)")
 
-    excel_bytes = make_excel_bytes(df_j, df_s)
+    excel_bytes = make_excel_bytes(df_j, df_s, df_r)
     st.download_button(
-        "⬇️ Descargar Excel (Jugadores + Seguimiento)",
+        "⬇️ Descargar Excel (Jugadores + Seguimiento + Reportes)",
         data=excel_bytes,
         file_name="prestamos_aaaj.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
