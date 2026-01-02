@@ -9,6 +9,8 @@ from google.oauth2.service_account import Credentials
 from datetime import date, datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import uuid
+from io import BytesIO
+import matplotlib.pyplot as plt
 
 # =========================
 # Configuración Streamlit
@@ -58,6 +60,7 @@ DISPLAY_LABELS = {
     "observaciones": "Observaciones",
     # Seguimiento
     "registro_id": "ID registro",
+    "week_start": "Semana (inicio)",
     "week_end": "Semana (fin)",
     "partidos": "Partidos",
     "minutos": "Minutos",
@@ -96,9 +99,11 @@ REQUIRED_JUGADORES_COLS = [
     "updated_at",
 ]
 
+# ✅ Agregamos week_start (Semana inicio)
 REQUIRED_SEGUIMIENTO_COLS = [
     "registro_id",
     "jugador_id",
+    "week_start",
     "week_end",
     "partidos",
     "minutos",
@@ -140,13 +145,17 @@ def hoy_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_week_end(d=None):
+def get_week_start(d=None):
+    """Lunes de la semana"""
     if d is None:
         d = date.today()
     if isinstance(d, datetime):
         d = d.date()
-    days_to_sun = 6 - d.weekday()
-    return d + timedelta(days=days_to_sun)
+    return d - timedelta(days=d.weekday())
+
+
+def get_week_end_from_start(week_start: date) -> date:
+    return week_start + timedelta(days=6)
 
 
 def is_gk(puesto: str) -> bool:
@@ -168,6 +177,69 @@ def pretty_df(df: pd.DataFrame, cols: list, hide_internal_ids: bool = False) -> 
     out = out[cols2].copy()
     out = out.rename(columns={c: DISPLAY_LABELS.get(c, c.replace("_", " ").title()) for c in cols2})
     return out
+
+
+def kpi_card(title: str, value: str):
+    """KPI compacto (más chico que st.metric) para que entren valores largos."""
+    st.markdown(
+        f"""
+        <div style="
+            border:1px solid rgba(255,255,255,0.12);
+            border-radius:12px;
+            padding:10px 12px;
+            background: rgba(255,255,255,0.03);
+            ">
+            <div style="font-size:12px; opacity:0.8; margin-bottom:6px;">{title}</div>
+            <div style="font-size:16px; font-weight:700; line-height:1.2; word-break:break-word;">
+                {value}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def bar_chart_with_labels(df: pd.DataFrame, x_col: str, y_col: str, title: str):
+    """Barras rojas con labels blancos centrados."""
+    if df.empty:
+        st.info("No hay datos para graficar.")
+        return
+
+    dd = df.copy()
+    dd = dd.sort_values(x_col)
+
+    x = dd[x_col].astype(str).tolist()
+    y = pd.to_numeric(dd[y_col], errors="coerce").fillna(0).astype(int).tolist()
+
+    fig, ax = plt.subplots(figsize=(8, 3.6))
+    bars = ax.bar(x, y, color="#d60000")  # rojo
+
+    ax.set_title(title)
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.tick_params(axis="x", rotation=45)
+
+    # Labels dentro de la barra (blanco, centrado)
+    for rect, val in zip(bars, y):
+        height = rect.get_height()
+        if height == 0:
+            continue
+        ax.text(
+            rect.get_x() + rect.get_width() / 2.0,
+            height / 2.0,
+            f"{val}",
+            ha="center",
+            va="center",
+            color="white",
+            fontsize=10,
+            fontweight="bold",
+        )
+
+    # Ajuste visual
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    st.pyplot(fig)
 
 
 # =========================
@@ -289,9 +361,10 @@ def normalizar_jugadores(df_j):
 
     if "opcion_compra" in df_j.columns:
         df_j["opcion_compra"] = (
-            df_j["opcion_compra"].astype(str).str.strip().str.lower().map(
-                {"true": True, "false": False, "1": True, "0": False, "si": True, "sí": True, "no": False}
-            ).fillna(False)
+            df_j["opcion_compra"]
+            .astype(str).str.strip().str.lower()
+            .map({"true": True, "false": False, "1": True, "0": False, "si": True, "sí": True, "no": False})
+            .fillna(False)
         )
 
     return df_j
@@ -301,8 +374,9 @@ def normalizar_seguimiento(df_s):
     if df_s.empty:
         df_s = pd.DataFrame(columns=REQUIRED_SEGUIMIENTO_COLS)
 
-    if "week_end" in df_s.columns:
-        df_s["week_end"] = df_s["week_end"].apply(_parse_date_safe)
+    for col in ["week_start", "week_end"]:
+        if col in df_s.columns:
+            df_s[col] = df_s[col].apply(_parse_date_safe)
 
     num_cols = ["partidos", "minutos", "goles_marcados", "goles_encajados", "amarillas", "rojas"]
     for c in num_cols:
@@ -358,6 +432,47 @@ def eliminar_jugador_hard(df_j: pd.DataFrame, df_s: pd.DataFrame, jugador_id: st
 
 
 # =========================
+# Export Excel (XLSX)
+# =========================
+def make_excel_bytes(df_j: pd.DataFrame, df_s: pd.DataFrame) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_j_export = df_j.copy()
+        df_s_export = df_s.copy()
+
+        # Export con headers institucionales (más amigable)
+        df_j_export.to_excel(writer, index=False, sheet_name="Jugadores")
+        df_s_export.to_excel(writer, index=False, sheet_name="Seguimiento")
+
+        # También export “vista” ya renombrada (institucional)
+        # (sirve si quieren imprimir/leer sin columnas técnicas)
+        try:
+            cols_j_view = [
+                "nombre", "puesto", "fecha_nacimiento",
+                "pais_prestamo", "division_prestamo", "club_prestamo",
+                "estado", "opcion_compra", "fecha_retorno", "fin_contrato_aaaj",
+                "observaciones", "jugador_id"
+            ]
+            pretty_df(df_j_export, cols_j_view, hide_internal_ids=False).to_excel(
+                writer, index=False, sheet_name="Jugadores (Vista)"
+            )
+
+            cols_s_view = [
+                "week_start", "week_end",
+                "partidos", "minutos", "goles_marcados", "goles_encajados",
+                "amarillas", "rojas", "incidencias",
+                "jugador_id", "registro_id"
+            ]
+            pretty_df(df_s_export, cols_s_view, hide_internal_ids=False).to_excel(
+                writer, index=False, sheet_name="Seguimiento (Vista)"
+            )
+        except Exception:
+            pass
+
+    return output.getvalue()
+
+
+# =========================
 # UI: Navegación
 # =========================
 pages = [
@@ -380,7 +495,6 @@ for c in REQUIRED_SEGUIMIENTO_COLS:
     if c not in df_s.columns:
         df_s[c] = ""
 
-
 # =========================
 # Página 1: Jugadores
 # =========================
@@ -395,8 +509,13 @@ if page == pages[0]:
         with st.form("form_crear_jugador", clear_on_submit=True):
             nombre = st.text_input("Nombre", placeholder="Escribe nombre del jugador.")
             puesto = st.selectbox("Puesto", PUESTOS)
-            
-            fecha_nac = st.date_input("Fecha de nacimiento", value=date.today(), min_value=date(1950, 1, 1), max_value=date.today())
+
+            fecha_nac = st.date_input(
+                "Fecha de nacimiento",
+                value=date.today(),
+                min_value=date(1950, 1, 1),
+                max_value=date.today()
+            )
 
             pais = st.text_input("País (préstamo)", placeholder="País en donde jugará el jugador.")
             division = st.selectbox("División", DIVISIONES, index=0)
@@ -456,23 +575,43 @@ if page == pages[0]:
             def _date_or_default(x, default):
                 return x if isinstance(x, date) else default
 
-            # Form de edición
             with st.form("form_editar_jugador", clear_on_submit=False):
                 nombre = st.text_input("Nombre", value=str(j.get("nombre", "")))
                 puesto_val = str(j.get("puesto", PUESTOS[0]))
-                puesto = st.selectbox("Puesto", PUESTOS, index=PUESTOS.index(puesto_val) if puesto_val in PUESTOS else 0)
-                fecha_nac = st.date_input("Fecha de nacimiento", value=_date_or_default(j.get("fecha_nacimiento", pd.NaT), date(2000, 1, 1)))
+                puesto = st.selectbox(
+                    "Puesto", PUESTOS,
+                    index=PUESTOS.index(puesto_val) if puesto_val in PUESTOS else 0
+                )
+
+                fecha_nac = st.date_input(
+                    "Fecha de nacimiento",
+                    value=_date_or_default(j.get("fecha_nacimiento", pd.NaT), date(2000, 1, 1)),
+                    min_value=date(1950, 1, 1),
+                    max_value=date.today()
+                )
 
                 pais = st.text_input("País (préstamo)", value=str(j.get("pais_prestamo", "")))
                 div_val = str(j.get("division_prestamo", DIVISIONES[0]))
-                division = st.selectbox("División", DIVISIONES, index=DIVISIONES.index(div_val) if div_val in DIVISIONES else 0)
+                division = st.selectbox(
+                    "División", DIVISIONES,
+                    index=DIVISIONES.index(div_val) if div_val in DIVISIONES else 0
+                )
                 club_prestamo = st.text_input("Club (préstamo)", value=str(j.get("club_prestamo", "")))
 
                 opcion_compra = st.checkbox("Tiene opción de compra", value=bool(j.get("opcion_compra", False)))
-                fecha_retorno = st.date_input("Fecha de retorno", value=_date_or_default(j.get("fecha_retorno", pd.NaT), date.today() + relativedelta(months=6)))
-                fin_contrato = st.date_input("Fin de contrato con AAAJ", value=_date_or_default(j.get("fin_contrato_aaaj", pd.NaT), date.today() + relativedelta(years=2)))
+                fecha_retorno = st.date_input(
+                    "Fecha de retorno",
+                    value=_date_or_default(j.get("fecha_retorno", pd.NaT), date.today() + relativedelta(months=6))
+                )
+                fin_contrato = st.date_input(
+                    "Fin de contrato con AAAJ",
+                    value=_date_or_default(j.get("fin_contrato_aaaj", pd.NaT), date.today() + relativedelta(years=2))
+                )
                 estado_val = str(j.get("estado", "Activo"))
-                estado = st.selectbox("Estado", ["Activo", "Finalizado", "Rescindido"], index=["Activo", "Finalizado", "Rescindido"].index(estado_val) if estado_val in ["Activo", "Finalizado", "Rescindido"] else 0)
+                estado = st.selectbox(
+                    "Estado", ["Activo", "Finalizado", "Rescindido"],
+                    index=["Activo", "Finalizado", "Rescindido"].index(estado_val) if estado_val in ["Activo", "Finalizado", "Rescindido"] else 0
+                )
                 obs = st.text_area("Observaciones", value=str(j.get("observaciones", "")))
 
                 submitted = st.form_submit_button("✅ Guardar cambios")
@@ -502,25 +641,31 @@ if page == pages[0]:
 
             col1, col2 = st.columns([1, 1], gap="large")
 
-            # Baja lógica
             with col1:
                 st.markdown("**Dar de baja (recomendado)**")
-                motivo = st.text_input("Motivo / nota de baja", key="motivo_baja", placeholder="Ej: Fin de préstamo / rescisión / etc.")
+                motivo = st.text_input(
+                    "Motivo / nota de baja",
+                    key="motivo_baja",
+                    placeholder="Ej: Fin de préstamo / rescisión / etc."
+                )
                 if st.button("🚫 Dar de baja (Rescindido)", type="secondary"):
                     df_new = baja_jugador_soft(df_j, jugador_id, motivo=motivo)
                     save_jugadores(df_new)
                     st.success("Jugador dado de baja (estado: Rescindido) ✅")
 
-            # Borrado definitivo (doble confirmación)
             with col2:
                 st.markdown("**Eliminar definitivamente**")
                 st.caption("Esto borra al jugador y todos sus registros de seguimiento.")
                 confirm_text = st.text_input(
-                    "Escribí 'Eliminar' para confirmar",
+                    "Escribí ELIMINAR para confirmar",
                     key="confirm_eliminar",
-                    placeholder="Eliminar",
+                    placeholder="ELIMINAR",
                 )
-                if st.button("🗑️ Eliminar definitivamente", type="primary", disabled=(confirm_text.strip().upper() != "ELIMINAR")):
+                if st.button(
+                    "🗑️ Eliminar definitivamente",
+                    type="primary",
+                    disabled=(confirm_text.strip().upper() != "ELIMINAR")
+                ):
                     dfj_new, dfs_new = eliminar_jugador_hard(df_j, df_s, jugador_id)
                     save_jugadores(dfj_new)
                     save_seguimiento(dfs_new)
@@ -569,69 +714,92 @@ elif page == pages[1]:
     )
     label_to_id = dict(zip(activos["label"], activos["jugador_id"]))
 
-    colA, colB = st.columns([1, 1], gap="large")
+    # ✅ Layout: Formulario primero, tabla debajo
+    st.markdown("### Cargar semana")
 
-    with colA:
-        jugador_label = st.selectbox("Jugador", activos["label"].tolist())
-        jugador_id = label_to_id[jugador_label]
-        jugador_row = activos.loc[activos["jugador_id"] == jugador_id].iloc[0]
-        puesto = str(jugador_row["puesto"])
+    jugador_label = st.selectbox("Jugador", activos["label"].tolist())
+    jugador_id = label_to_id[jugador_label]
+    jugador_row = activos.loc[activos["jugador_id"] == jugador_id].iloc[0]
+    puesto = str(jugador_row["puesto"])
 
-        st.markdown("### Cargar semana")
-        with st.form("form_carga_semanal", clear_on_submit=True):
-            week_end = st.date_input("Semana (fin de semana)", value=get_week_end())
-            partidos = st.number_input("Partidos", min_value=0, max_value=10, value=0, step=1)
-            minutos = st.number_input("Minutos", min_value=0, max_value=900, value=0, step=1)
+    with st.form("form_carga_semanal", clear_on_submit=True):
+        # ✅ Semana por rango: elegís lunes (inicio) y se calcula fin
+        week_start = st.date_input(
+            "Semana (inicio - Lunes)",
+            value=get_week_start(),
+            help="Elegí el Lunes de la semana a considerar. El sistema calcula automáticamente el fin (Domingo)."
+        )
+        week_end = get_week_end_from_start(week_start)
+        st.caption(f"Semana seleccionada: **{week_start.strftime('%d/%m/%Y')}** → **{week_end.strftime('%d/%m/%Y')}**")
 
-            if is_gk(puesto):
-                goles_encajados = st.number_input("Goles encajados", min_value=0, max_value=50, value=0, step=1)
-                goles_marcados = 0
-            else:
-                goles_marcados = st.number_input("Goles", min_value=0, max_value=50, value=0, step=1)
-                goles_encajados = 0
+        partidos = st.number_input("Partidos", min_value=0, max_value=10, value=0, step=1)
+        minutos = st.number_input("Minutos", min_value=0, max_value=900, value=0, step=1)
 
-            amarillas = st.number_input("Amarillas", min_value=0, max_value=10, value=0, step=1)
-            rojas = st.number_input("Rojas", min_value=0, max_value=10, value=0, step=1)
-            incidencias = st.text_area("Incidencias / notas", placeholder="Lesión, debut, asistencia, expulsión, etc.")
-
-            submit = st.form_submit_button("Guardar semana")
-            if submit:
-                exists = (
-                    (df_s["jugador_id"].astype(str) == str(jugador_id)) &
-                    (df_s["week_end"].apply(_parse_date_safe) == week_end)
-                )
-                if exists.any():
-                    st.error("Ya existe un registro para ese jugador en esa semana. Corregilo desde Admin/Export.")
-                else:
-                    now = hoy_str()
-                    new_row = {
-                        "registro_id": str(uuid.uuid4()),
-                        "jugador_id": str(jugador_id),
-                        "week_end": week_end,
-                        "partidos": int(partidos),
-                        "minutos": int(minutos),
-                        "goles_marcados": int(goles_marcados),
-                        "goles_encajados": int(goles_encajados),
-                        "amarillas": int(amarillas),
-                        "rojas": int(rojas),
-                        "incidencias": incidencias.strip(),
-                        "created_at": now,
-                        "updated_at": now,
-                    }
-                    df_s2 = pd.concat([df_s, pd.DataFrame([new_row])], ignore_index=True)
-                    save_seguimiento(df_s2)
-                    st.success("Carga guardada ✅")
-
-    with colB:
-        st.markdown("### Últimos registros del jugador")
-        df_player = df_s[df_s["jugador_id"].astype(str) == str(jugador_id)].copy()
-        if df_player.empty:
-            st.info("Aún no hay cargas para este jugador.")
+        if is_gk(puesto):
+            goles_encajados = st.number_input("Goles encajados", min_value=0, max_value=50, value=0, step=1)
+            goles_marcados = 0
         else:
-            df_player = normalizar_seguimiento(df_player)
-            df_player = df_player.sort_values("week_end", ascending=False)
-            show_cols = ["week_end", "partidos", "minutos", "goles_marcados", "goles_encajados", "amarillas", "rojas", "incidencias"]
-            st.dataframe(pretty_df(df_player, show_cols, hide_internal_ids=True), use_container_width=True, hide_index=True)
+            goles_marcados = st.number_input("Goles", min_value=0, max_value=50, value=0, step=1)
+            goles_encajados = 0
+
+        amarillas = st.number_input("Amarillas", min_value=0, max_value=10, value=0, step=1)
+        rojas = st.number_input("Rojas", min_value=0, max_value=10, value=0, step=1)
+        incidencias = st.text_area("Incidencias / notas", placeholder="Lesión, debut, asistencia, expulsión, etc.")
+
+        submit = st.form_submit_button("Guardar semana")
+        if submit:
+            # Evita duplicados por jugador + semana (inicio)
+            exists = (
+                (df_s["jugador_id"].astype(str) == str(jugador_id)) &
+                (df_s.get("week_start", pd.Series([None]*len(df_s))).apply(_parse_date_safe) == week_start)
+            )
+            if exists.any():
+                st.error("Ya existe un registro para ese jugador en esa semana. Corregilo desde Admin/Export.")
+            else:
+                now = hoy_str()
+                new_row = {
+                    "registro_id": str(uuid.uuid4()),
+                    "jugador_id": str(jugador_id),
+                    "week_start": week_start,
+                    "week_end": week_end,
+                    "partidos": int(partidos),
+                    "minutos": int(minutos),
+                    "goles_marcados": int(goles_marcados),
+                    "goles_encajados": int(goles_encajados),
+                    "amarillas": int(amarillas),
+                    "rojas": int(rojas),
+                    "incidencias": incidencias.strip(),
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                df_s2 = pd.concat([df_s, pd.DataFrame([new_row])], ignore_index=True)
+                save_seguimiento(df_s2)
+                st.success("Carga guardada ✅")
+
+    st.markdown("---")
+    st.markdown("### Últimos registros del jugador")
+
+    df_player = df_s[df_s["jugador_id"].astype(str) == str(jugador_id)].copy()
+    if df_player.empty:
+        st.info("Aún no hay cargas para este jugador.")
+    else:
+        df_player = normalizar_seguimiento(df_player)
+        # orden: más reciente primero por week_start si existe, sino por week_end
+        sort_col = "week_start" if "week_start" in df_player.columns else "week_end"
+        df_player = df_player.sort_values(sort_col, ascending=False)
+
+        show_cols = [
+            "week_start", "week_end",
+            "partidos", "minutos",
+            "goles_marcados", "goles_encajados",
+            "amarillas", "rojas",
+            "incidencias"
+        ]
+        st.dataframe(
+            pretty_df(df_player, show_cols, hide_internal_ids=True),
+            use_container_width=True,
+            hide_index=True
+        )
 
 # =========================
 # Página 3: Tabla acumulada
@@ -660,7 +828,11 @@ elif page == pages[2]:
 
     c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
     with c1:
-        estados = st.multiselect("Estado", sorted(base["estado"].dropna().unique().tolist()), default=["Activo"] if "Activo" in base["estado"].unique() else None)
+        estados = st.multiselect(
+            "Estado",
+            sorted(base["estado"].dropna().unique().tolist()),
+            default=["Activo"] if "Activo" in base["estado"].unique() else None
+        )
     with c2:
         puestos = st.multiselect("Puesto", sorted(base["puesto"].dropna().unique().tolist()))
     with c3:
@@ -719,16 +891,20 @@ elif page == pages[3]:
     jugador_id = label_to_id[jugador_label]
     j = df_j2[df_j2["jugador_id"].astype(str) == str(jugador_id)].iloc[0]
 
-    a, b, c, d = st.columns(4)
-    a.metric("Puesto", str(j["puesto"]))
-    b.metric("Club", str(j["club_prestamo"]))
-    c.metric("País / División", f"{str(j.get('pais_prestamo',''))} — {str(j.get('division_prestamo',''))}")
-    d.metric("Fecha de retorno", str(j["fecha_retorno"]))
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        kpi_card("Puesto", str(j.get("puesto", "")))
+    with c2:
+        kpi_card("Club", str(j.get("club_prestamo", "")))
+    with c3:
+        kpi_card("País / División", f"{str(j.get('pais_prestamo',''))} — {str(j.get('division_prestamo',''))}")
+    with c4:
+        kpi_card("Fecha de retorno", str(j.get("fecha_retorno", "")))
 
-    st.write("**Fin de contrato AAAJ:**", str(j["fin_contrato_aaaj"]))
-    st.write("**Opción de compra:**", "Sí" if bool(j["opcion_compra"]) else "No")
+    st.write("**Fin de contrato AAAJ:**", str(j.get("fin_contrato_aaaj", "")))
+    st.write("**Opción de compra:**", "Sí" if bool(j.get("opcion_compra", False)) else "No")
     if str(j.get("observaciones", "")).strip():
-        st.info(f"**Observaciones:** {str(j['observaciones'])}")
+        st.info(f"**Observaciones:** {str(j.get('observaciones',''))}")
 
     df_player = df_s[df_s["jugador_id"].astype(str) == str(jugador_id)].copy()
     df_player = normalizar_seguimiento(df_player)
@@ -737,20 +913,33 @@ elif page == pages[3]:
         st.warning("Este jugador aún no tiene cargas semanales.")
         st.stop()
 
-    df_player = df_player.sort_values("week_end")
-    show_cols = ["week_end", "partidos", "minutos", "goles_marcados", "goles_encajados", "amarillas", "rojas", "incidencias"]
+    # Orden cronológico por inicio de semana si existe
+    sort_col = "week_start" if "week_start" in df_player.columns else "week_end"
+    df_player = df_player.sort_values(sort_col)
+
+    show_cols = [
+        "week_start", "week_end",
+        "partidos", "minutos",
+        "goles_marcados", "goles_encajados",
+        "amarillas", "rojas",
+        "incidencias"
+    ]
     st.markdown("### Histórico semanal")
     st.dataframe(pretty_df(df_player, show_cols, hide_internal_ids=True), use_container_width=True, hide_index=True)
 
-    st.markdown("### Tendencias")
-    g1, g2 = st.columns(2)
-    with g1:
-        st.line_chart(df_player.set_index("week_end")["minutos"])
-    with g2:
-        if is_gk(str(j["puesto"])):
-            st.line_chart(df_player.set_index("week_end")["goles_encajados"])
+    st.markdown("### Tendencias (barras)")
+    # Graficamos contra week_start (si existe) para que quede claro el rango
+    xcol = "week_start" if "week_start" in df_player.columns else "week_end"
+
+    colg1, colg2 = st.columns(2)
+    with colg1:
+        bar_chart_with_labels(df_player, xcol, "minutos", "Minutos por semana")
+
+    with colg2:
+        if is_gk(str(j.get("puesto", ""))):
+            bar_chart_with_labels(df_player, xcol, "goles_encajados", "Goles encajados por semana")
         else:
-            st.line_chart(df_player.set_index("week_end")["goles_marcados"])
+            bar_chart_with_labels(df_player, xcol, "goles_marcados", "Goles por semana")
 
 # =========================
 # Página 5: Admin / export
@@ -763,7 +952,8 @@ else:
 
     df_s_edit = df_s.copy()
     cols_front = [
-        "week_end", "jugador_id", "partidos", "minutos",
+        "week_start", "week_end", "jugador_id",
+        "partidos", "minutos",
         "goles_marcados", "goles_encajados",
         "amarillas", "rojas", "incidencias",
         "registro_id",
@@ -776,7 +966,10 @@ else:
         pretty_df(df_s_show, cols_front + cols_rest, hide_internal_ids=False),
         use_container_width=True,
         num_rows="dynamic",
-        column_config={DISPLAY_LABELS.get("week_end", "Semana (fin)"): st.column_config.DateColumn("Semana (fin)")},
+        column_config={
+            DISPLAY_LABELS.get("week_start", "Semana (inicio)"): st.column_config.DateColumn("Semana (inicio)"),
+            DISPLAY_LABELS.get("week_end", "Semana (fin)"): st.column_config.DateColumn("Semana (fin)"),
+        },
         disabled=[DISPLAY_LABELS.get("registro_id", "ID registro")],
     )
 
@@ -795,16 +988,13 @@ else:
         save_seguimiento(df_new)
         st.success("Seguimiento guardado ✅")
 
-    st.markdown("### Export")
+    st.markdown("---")
+    st.markdown("### Export (Excel)")
+
+    excel_bytes = make_excel_bytes(df_j, df_s)
     st.download_button(
-        "⬇️ Descargar jugadores (CSV)",
-        data=df_j.to_csv(index=False).encode("utf-8"),
-        file_name="jugadores.csv",
-        mime="text/csv",
-    )
-    st.download_button(
-        "⬇️ Descargar seguimiento (CSV)",
-        data=df_s.to_csv(index=False).encode("utf-8"),
-        file_name="seguimiento.csv",
-        mime="text/csv",
+        "⬇️ Descargar Excel (Jugadores + Seguimiento)",
+        data=excel_bytes,
+        file_name="prestamos_aaaj.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
