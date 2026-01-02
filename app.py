@@ -336,7 +336,7 @@ def upsert_jugador(df_j, jugador_id, payload: dict):
 
 
 def baja_jugador_soft(df_j: pd.DataFrame, jugador_id: str, motivo: str = "") -> pd.DataFrame:
-    """Marca el jugador como Rescindido (baja lógica)."""
+    """Marca el jugador como Rescindido."""
     df_new = df_j.copy()
     mask = df_new["jugador_id"].astype(str) == str(jugador_id)
     if not mask.any():
@@ -393,11 +393,11 @@ if page == pages[0]:
     with tab_crear:
         st.markdown("### Crear jugador")
         with st.form("form_crear_jugador", clear_on_submit=True):
-            nombre = st.text_input("Nombre", placeholder="Ej: Juan Pérez")
+            nombre = st.text_input("Nombre")
             puesto = st.selectbox("Puesto", PUESTOS)
             fecha_nac = st.date_input("Fecha de nacimiento", value=date(2000, 1, 1))
 
-            pais = st.text_input("País (préstamo)", placeholder="Ej: Argentina / Uruguay / Chile")
+            pais = st.text_input("País (préstamo)")
             division = st.selectbox("División", DIVISIONES, index=0)
             club_prestamo = st.text_input("Club (préstamo)", placeholder="Ej: Club X")
 
