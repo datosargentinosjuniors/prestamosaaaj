@@ -904,7 +904,7 @@ elif page == pages[3]:
     jugador_id = label_to_id[jugador_label]
     j = df_j2[df_j2["jugador_id"].astype(str) == str(jugador_id)].iloc[0]
 
-    c1, c2, c3, c4, c5, c6 = st.columns(5)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         kpi_card("Puesto", str(j.get("puesto", "")))
     with c2:
@@ -941,7 +941,7 @@ elif page == pages[3]:
     st.markdown("### Histórico semanal")
     st.dataframe(pretty_df(df_player, show_cols, hide_internal_ids=True), use_container_width=True, hide_index=True)
 
-    st.markdown("### Tendencias (barras horizontales)")
+    st.markdown("### Tendencias")
     # ✅ Uno debajo del otro
     barh_with_labels_weekrange(df_player, "week_start", "week_end", "minutos", "Minutos por semana")
 
