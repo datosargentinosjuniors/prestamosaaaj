@@ -26,11 +26,26 @@ SCOPES = [
 
 SHEET_NAME = st.secrets.get("GSPREAD_SHEET_NAME", "")
 
+PUESTOS = [
+    "Arquero",
+    "Defensor central",
+    "Lateral",
+    "Mediocampista defensivo",
+    "Mediocampista mixto",
+    "Mediocampista ofensivo",
+    "Extremo",
+    "Delantero",
+]
+
+DIVISIONES = ["1° división", "2° división", "3° división"]
+
 REQUIRED_JUGADORES_COLS = [
     "jugador_id",
     "nombre",
     "puesto",
     "fecha_nacimiento",
+    "pais_prestamo",
+    "division_prestamo",
     "club_prestamo",
     "opcion_compra",
     "fecha_retorno",
@@ -58,7 +73,6 @@ REQUIRED_SEGUIMIENTO_COLS = [
 
 
 def _parse_date_safe(x):
-    """Acepta date/datetime/str vacío. Devuelve date o NaT."""
     if x is None:
         return pd.NaT
     if isinstance(x, date) and not isinstance(x, datetime):
@@ -73,9 +87,9 @@ def _parse_date_safe(x):
             return datetime.strptime(s, fmt).date()
         except Exception:
             pass
-    # último intento pandas
     try:
-        return pd.to_datetime(s, errors="coerce").date()
+        out = pd.to_datetime(s, errors="coerce")
+        return out.date() if not pd.isna(out) else pd.NaT
     except Exception:
         return pd.NaT
 
@@ -90,7 +104,7 @@ def get_gspread_client():
 @st.cache_resource
 def get_workbook():
     if not SHEET_NAME:
-        st.error("Falta configurar GSPREAD_SHEET_NAME en secrets.toml")
+        st.error('Falta configurar GSPREAD_SHEET_NAME en secrets')
         st.stop()
     gc = get_gspread_client()
     try:
@@ -115,7 +129,6 @@ def _get_or_create_worksheet(sh, title, cols):
         ws.append_row(cols)
         return ws
 
-    # asegurar headers
     values = ws.get_all_values()
     if not values:
         ws.append_row(cols)
@@ -123,7 +136,6 @@ def _get_or_create_worksheet(sh, title, cols):
 
     header = values[0]
     if header != cols:
-        # si el header no coincide, lo "alineamos" conservando datos por nombre (si puede)
         df_old = pd.DataFrame(values[1:], columns=header) if len(values) > 1 else pd.DataFrame(columns=header)
         for c in cols:
             if c not in df_old.columns:
@@ -149,8 +161,7 @@ def _ws_to_df(ws):
         return pd.DataFrame(columns=values[0] if values else [])
     header = values[0]
     data = values[1:]
-    df = pd.DataFrame(data, columns=header)
-    return df
+    return pd.DataFrame(data, columns=header)
 
 
 def _df_to_ws_overwrite(ws, df, cols):
@@ -185,23 +196,20 @@ def save_seguimiento(df_s):
     st.cache_data.clear()
 
 
-# =========================
-# Helpers de negocio
-# =========================
 def normalizar_jugadores(df_j):
     if df_j.empty:
         df_j = pd.DataFrame(columns=REQUIRED_JUGADORES_COLS)
 
-    # parse fechas
     for col in ["fecha_nacimiento", "fecha_retorno", "fin_contrato_aaaj"]:
         if col in df_j.columns:
             df_j[col] = df_j[col].apply(_parse_date_safe)
 
-    # opcion_compra a bool-like
     if "opcion_compra" in df_j.columns:
-        df_j["opcion_compra"] = df_j["opcion_compra"].astype(str).str.strip().str.lower().map(
-            {"true": True, "false": False, "1": True, "0": False, "si": True, "sí": True, "no": False}
-        ).fillna(False)
+        df_j["opcion_compra"] = (
+            df_j["opcion_compra"].astype(str).str.strip().str.lower().map(
+                {"true": True, "false": False, "1": True, "0": False, "si": True, "sí": True, "no": False}
+            ).fillna(False)
+        )
 
     return df_j
 
@@ -213,7 +221,6 @@ def normalizar_seguimiento(df_s):
     if "week_end" in df_s.columns:
         df_s["week_end"] = df_s["week_end"].apply(_parse_date_safe)
 
-    # numéricos
     num_cols = ["partidos", "minutos", "goles_marcados", "goles_encajados", "amarillas", "rojas"]
     for c in num_cols:
         if c in df_s.columns:
@@ -227,12 +234,10 @@ def hoy_str():
 
 
 def get_week_end(d=None):
-    """Devuelve domingo de la semana de una fecha (por defecto hoy)."""
     if d is None:
         d = date.today()
     if isinstance(d, datetime):
         d = d.date()
-    # weekday(): lunes 0 ... domingo 6
     days_to_sun = 6 - d.weekday()
     return d + timedelta(days=days_to_sun)
 
@@ -241,7 +246,30 @@ def is_gk(puesto: str) -> bool:
     if puesto is None:
         return False
     p = str(puesto).strip().lower()
-    return any(k in p for k in ["arquero", "portero", "gk", "goalkeeper"])
+    return "arquero" in p or p in ["gk", "goalkeeper", "portero"]
+
+
+def upsert_jugador(df_j, jugador_id, payload: dict):
+    df_new = df_j.copy()
+    if (df_new["jugador_id"].astype(str) == str(jugador_id)).any():
+        mask = df_new["jugador_id"].astype(str) == str(jugador_id)
+        for k, v in payload.items():
+            df_new.loc[mask, k] = v
+        df_new.loc[mask, "updated_at"] = hoy_str()
+    else:
+        now = hoy_str()
+        row = {c: "" for c in REQUIRED_JUGADORES_COLS}
+        row.update(payload)
+        row["jugador_id"] = str(jugador_id)
+        row["created_at"] = now
+        row["updated_at"] = now
+        df_new = pd.concat([df_new, pd.DataFrame([row])], ignore_index=True)
+
+    for c in REQUIRED_JUGADORES_COLS:
+        if c not in df_new.columns:
+            df_new[c] = ""
+    df_new = df_new[REQUIRED_JUGADORES_COLS]
+    return df_new
 
 
 # =========================
@@ -260,7 +288,6 @@ df_j_raw, df_s_raw = load_data()
 df_j = normalizar_jugadores(df_j_raw)
 df_s = normalizar_seguimiento(df_s_raw)
 
-# Asegurar columnas mínimas
 for c in REQUIRED_JUGADORES_COLS:
     if c not in df_j.columns:
         df_j[c] = ""
@@ -268,105 +295,146 @@ for c in REQUIRED_SEGUIMIENTO_COLS:
     if c not in df_s.columns:
         df_s[c] = ""
 
+
 # =========================
-# Página 1: Jugadores
+# Página 1: Jugadores (FORM ARRIBA + TABLA ABAJO) + sin "doble guardado"
 # =========================
 if page == pages[0]:
     st.subheader("➕ Alta / Edición de Jugadores")
 
-    col1, col2 = st.columns([1, 1], gap="large")
+    tab_crear, tab_editar = st.tabs(["Crear jugador", "Editar jugador"])
 
-    with col1:
-        st.markdown("### Crear jugador")
+    # ---------- CREAR ----------
+    with tab_crear:
+        st.markdown("### Crear jugador (se guarda al enviar)")
         with st.form("form_crear_jugador", clear_on_submit=True):
             nombre = st.text_input("Nombre", placeholder="Ej: Juan Pérez")
-            puesto = st.selectbox("Puesto", ["Arquero", "Defensor", "Mediocampista", "Delantero"])
+            puesto = st.selectbox("Puesto", PUESTOS)
             fecha_nac = st.date_input("Fecha de nacimiento", value=date(2000, 1, 1))
+
+            pais = st.text_input("País (préstamo)", placeholder="Ej: Argentina / Uruguay / Chile")
+            division = st.selectbox("División", DIVISIONES, index=0)
             club_prestamo = st.text_input("Club (préstamo)", placeholder="Ej: Club X")
+
             opcion_compra = st.checkbox("Tiene opción de compra")
             fecha_retorno = st.date_input("Fecha de retorno", value=date.today() + relativedelta(months=6))
             fin_contrato = st.date_input("Fin de contrato con AAAJ", value=date.today() + relativedelta(years=2))
             estado = st.selectbox("Estado", ["Activo", "Finalizado", "Rescindido"])
             obs = st.text_area("Observaciones", placeholder="Notas relevantes...")
 
-            submitted = st.form_submit_button("Crear jugador")
+            submitted = st.form_submit_button("✅ Guardar jugador")
             if submitted:
                 if not nombre.strip():
                     st.error("El nombre no puede estar vacío.")
                 else:
                     jugador_id = str(uuid.uuid4())
-                    now = hoy_str()
-                    new_row = {
-                        "jugador_id": jugador_id,
+                    payload = {
                         "nombre": nombre.strip(),
                         "puesto": puesto,
                         "fecha_nacimiento": fecha_nac,
+                        "pais_prestamo": pais.strip(),
+                        "division_prestamo": division,
                         "club_prestamo": club_prestamo.strip(),
-                        "opcion_compra": opcion_compra,
+                        "opcion_compra": bool(opcion_compra),
                         "fecha_retorno": fecha_retorno,
                         "fin_contrato_aaaj": fin_contrato,
                         "estado": estado,
                         "observaciones": obs.strip(),
-                        "created_at": now,
-                        "updated_at": now,
                     }
-                    df_j2 = pd.concat([df_j, pd.DataFrame([new_row])], ignore_index=True)
-                    save_jugadores(df_j2)
-                    st.success("Jugador creado y guardado en Google Sheets ✅")
+                    df_new = upsert_jugador(df_j, jugador_id, payload)
+                    save_jugadores(df_new)
+                    st.success("Jugador guardado ✅")
 
-    with col2:
-        st.markdown("### Editar jugadores (tabla)")
-        st.caption("Editás y luego apretás **Guardar cambios**. (Esto reescribe la hoja 'jugadores').")
+    # ---------- EDITAR ----------
+    with tab_editar:
+        st.markdown("### Editar jugador (se guarda al enviar)")
 
-        df_edit = df_j.copy()
+        if df_j.empty:
+            st.info("Todavía no hay jugadores cargados.")
+        else:
+            dfj2 = normalizar_jugadores(df_j.copy())
+            dfj2["label"] = (
+                dfj2["nombre"].astype(str)
+                + " — "
+                + dfj2["club_prestamo"].astype(str)
+                + " ("
+                + dfj2["puesto"].astype(str)
+                + ")"
+            )
+            label_to_id = dict(zip(dfj2["label"], dfj2["jugador_id"]))
 
-        # mostrar un editor más amigable
-        cols_show = [
-            "nombre", "puesto", "fecha_nacimiento", "club_prestamo",
-            "opcion_compra", "fecha_retorno", "fin_contrato_aaaj",
-            "estado", "observaciones", "jugador_id"
+            sel = st.selectbox("Seleccionar jugador", dfj2["label"].tolist())
+            jugador_id = label_to_id[sel]
+            j = dfj2[dfj2["jugador_id"].astype(str) == str(jugador_id)].iloc[0]
+
+            # valores por defecto seguros
+            def _date_or_default(x, default):
+                return x if isinstance(x, date) else default
+
+            with st.form("form_editar_jugador", clear_on_submit=False):
+                nombre = st.text_input("Nombre", value=str(j.get("nombre", "")))
+                puesto = st.selectbox("Puesto", PUESTOS, index=max(0, PUESTOS.index(str(j.get("puesto", PUESTOS[0]))) if str(j.get("puesto", PUESTOS[0])) in PUESTOS else 0))
+                fecha_nac = st.date_input("Fecha de nacimiento", value=_date_or_default(j.get("fecha_nacimiento", pd.NaT), date(2000, 1, 1)))
+
+                pais = st.text_input("País (préstamo)", value=str(j.get("pais_prestamo", "")))
+                div_val = str(j.get("division_prestamo", DIVISIONES[0]))
+                division = st.selectbox("División", DIVISIONES, index=DIVISIONES.index(div_val) if div_val in DIVISIONES else 0)
+                club_prestamo = st.text_input("Club (préstamo)", value=str(j.get("club_prestamo", "")))
+
+                opcion_compra = st.checkbox("Tiene opción de compra", value=bool(j.get("opcion_compra", False)))
+                fecha_retorno = st.date_input("Fecha de retorno", value=_date_or_default(j.get("fecha_retorno", pd.NaT), date.today() + relativedelta(months=6)))
+                fin_contrato = st.date_input("Fin de contrato con AAAJ", value=_date_or_default(j.get("fin_contrato_aaaj", pd.NaT), date.today() + relativedelta(years=2)))
+                estado = st.selectbox("Estado", ["Activo", "Finalizado", "Rescindido"], index=["Activo", "Finalizado", "Rescindido"].index(str(j.get("estado", "Activo"))) if str(j.get("estado", "Activo")) in ["Activo", "Finalizado", "Rescindido"] else 0)
+                obs = st.text_area("Observaciones", value=str(j.get("observaciones", "")))
+
+                submitted = st.form_submit_button("✅ Guardar cambios")
+                if submitted:
+                    if not nombre.strip():
+                        st.error("El nombre no puede estar vacío.")
+                    else:
+                        payload = {
+                            "nombre": nombre.strip(),
+                            "puesto": puesto,
+                            "fecha_nacimiento": fecha_nac,
+                            "pais_prestamo": pais.strip(),
+                            "division_prestamo": division,
+                            "club_prestamo": club_prestamo.strip(),
+                            "opcion_compra": bool(opcion_compra),
+                            "fecha_retorno": fecha_retorno,
+                            "fin_contrato_aaaj": fin_contrato,
+                            "estado": estado,
+                            "observaciones": obs.strip(),
+                        }
+                        df_new = upsert_jugador(df_j, jugador_id, payload)
+                        save_jugadores(df_new)
+                        st.success("Cambios guardados ✅")
+
+    st.markdown("---")
+    st.markdown("### Tabla de jugadores (visualización)")
+    st.caption("Esta tabla es solo para ver/filtrar. Para editar, usá el tab de **Editar jugador** (arriba).")
+
+    df_view = normalizar_jugadores(df_j.copy())
+
+    if df_view.empty:
+        st.info("No hay jugadores cargados todavía.")
+    else:
+        # tabla más amigable
+        show_cols = [
+            "nombre", "puesto",
+            "pais_prestamo", "division_prestamo", "club_prestamo",
+            "estado", "opcion_compra",
+            "fecha_retorno", "fin_contrato_aaaj",
+            "observaciones", "jugador_id"
         ]
-        df_show = df_edit[cols_show].copy()
+        for c in show_cols:
+            if c not in df_view.columns:
+                df_view[c] = ""
 
-        edited = st.data_editor(
-            df_show,
+        st.dataframe(
+            df_view[show_cols].sort_values(["estado", "nombre"], ascending=[True, True]),
             use_container_width=True,
-            num_rows="dynamic",
-            column_config={
-                "fecha_nacimiento": st.column_config.DateColumn("Fecha nacimiento"),
-                "fecha_retorno": st.column_config.DateColumn("Fecha retorno"),
-                "fin_contrato_aaaj": st.column_config.DateColumn("Fin contrato AAAJ"),
-                "opcion_compra": st.column_config.CheckboxColumn("Opción compra"),
-            },
-            disabled=["jugador_id"],
+            hide_index=True
         )
-
-        if st.button("💾 Guardar cambios (Jugadores)", type="primary"):
-            # reconstruir df_j con columnas completas
-            df_new = df_j.copy()
-            # mapear por jugador_id
-            edited = edited.copy()
-            edited["fecha_nacimiento"] = edited["fecha_nacimiento"].apply(_parse_date_safe)
-            edited["fecha_retorno"] = edited["fecha_retorno"].apply(_parse_date_safe)
-            edited["fin_contrato_aaaj"] = edited["fin_contrato_aaaj"].apply(_parse_date_safe)
-
-            # unir por jugador_id
-            df_new = df_new.drop(columns=[c for c in cols_show if c != "jugador_id"], errors="ignore")
-            df_new = df_new.merge(edited, on="jugador_id", how="right")
-
-            df_new["updated_at"] = hoy_str()
-            # created_at: si falta, lo ponemos ahora
-            df_new["created_at"] = df_new["created_at"].replace("", np.nan)
-            df_new["created_at"] = df_new["created_at"].fillna(hoy_str())
-
-            # asegurar columnas
-            for c in REQUIRED_JUGADORES_COLS:
-                if c not in df_new.columns:
-                    df_new[c] = ""
-            df_new = df_new[REQUIRED_JUGADORES_COLS]
-
-            save_jugadores(df_new)
-            st.success("Jugadores guardados ✅")
 
 # =========================
 # Página 2: Carga semanal
@@ -379,8 +447,14 @@ elif page == pages[1]:
         st.warning("No hay jugadores activos cargados. Andá a 'Alta / Edición de Jugadores'.")
         st.stop()
 
-    # selector jugador
-    activos["label"] = activos["nombre"].astype(str) + " — " + activos["club_prestamo"].astype(str) + " (" + activos["puesto"].astype(str) + ")"
+    activos["label"] = (
+        activos["nombre"].astype(str)
+        + " — "
+        + activos["club_prestamo"].astype(str)
+        + " ("
+        + activos["puesto"].astype(str)
+        + ")"
+    )
     label_to_id = dict(zip(activos["label"], activos["jugador_id"]))
 
     colA, colB = st.columns([1, 1], gap="large")
@@ -410,13 +484,12 @@ elif page == pages[1]:
 
             submit = st.form_submit_button("Guardar semana")
             if submit:
-                # evitar duplicado exacto jugador+week_end
                 exists = (
                     (df_s["jugador_id"].astype(str) == str(jugador_id)) &
                     (df_s["week_end"].apply(_parse_date_safe) == week_end)
                 )
                 if exists.any():
-                    st.error("Ya existe un registro para ese jugador en esa semana. Editalo desde la tabla (Admin) o cambialo.")
+                    st.error("Ya existe un registro para ese jugador en esa semana. Corregilo desde Admin/Export.")
                 else:
                     now = hoy_str()
                     new_row = {
@@ -435,7 +508,7 @@ elif page == pages[1]:
                     }
                     df_s2 = pd.concat([df_s, pd.DataFrame([new_row])], ignore_index=True)
                     save_seguimiento(df_s2)
-                    st.success("Carga guardada en Google Sheets ✅")
+                    st.success("Carga guardada ✅")
 
     with colB:
         st.markdown("### Últimos registros del jugador")
@@ -454,7 +527,6 @@ elif page == pages[1]:
 elif page == pages[2]:
     st.subheader("📊 Tabla Acumulada")
 
-    # merge jugadores + sumatoria seguimiento
     df_s2 = normalizar_seguimiento(df_s.copy())
     df_j2 = normalizar_jugadores(df_j.copy())
 
@@ -474,14 +546,13 @@ elif page == pages[2]:
 
     base = df_j2.merge(agg, on="jugador_id", how="left")
 
-    # filtros
     c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
     with c1:
         estados = st.multiselect("Estado", sorted(base["estado"].dropna().unique().tolist()), default=["Activo"] if "Activo" in base["estado"].unique() else None)
     with c2:
         puestos = st.multiselect("Puesto", sorted(base["puesto"].dropna().unique().tolist()))
     with c3:
-        clubes = st.multiselect("Club (préstamo)", sorted(base["club_prestamo"].dropna().unique().tolist()))
+        paises = st.multiselect("País", sorted(base["pais_prestamo"].dropna().unique().tolist()))
     with c4:
         solo_con_min = st.checkbox("Sólo con minutos > 0", value=True)
 
@@ -490,17 +561,18 @@ elif page == pages[2]:
         df_view = df_view[df_view["estado"].isin(estados)]
     if puestos:
         df_view = df_view[df_view["puesto"].isin(puestos)]
-    if clubes:
-        df_view = df_view[df_view["club_prestamo"].isin(clubes)]
+    if paises:
+        df_view = df_view[df_view["pais_prestamo"].isin(paises)]
     if solo_con_min:
         df_view = df_view[pd.to_numeric(df_view["minutos_total"], errors="coerce").fillna(0) > 0]
 
-    # ordenar
     df_view["minutos_total"] = pd.to_numeric(df_view["minutos_total"], errors="coerce").fillna(0).astype(int)
     df_view = df_view.sort_values(["minutos_total", "partidos_total"], ascending=False)
 
     show_cols = [
-        "nombre", "puesto", "club_prestamo", "estado",
+        "nombre", "puesto",
+        "pais_prestamo", "division_prestamo", "club_prestamo",
+        "estado",
         "partidos_total", "minutos_total",
         "goles_total", "encajados_total",
         "amarillas_total", "rojas_total",
@@ -511,7 +583,6 @@ elif page == pages[2]:
 
     st.dataframe(df_view[show_cols], use_container_width=True, hide_index=True)
 
-    # métricas rápidas
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Jugadores en vista", int(df_view.shape[0]))
     m2.metric("Minutos totales", int(df_view["minutos_total"].sum()))
@@ -529,25 +600,31 @@ elif page == pages[3]:
         st.stop()
 
     df_j2 = normalizar_jugadores(df_j.copy())
-    df_j2["label"] = df_j2["nombre"].astype(str) + " — " + df_j2["club_prestamo"].astype(str) + " (" + df_j2["puesto"].astype(str) + ")"
+    df_j2["label"] = (
+        df_j2["nombre"].astype(str)
+        + " — "
+        + df_j2["club_prestamo"].astype(str)
+        + " ("
+        + df_j2["puesto"].astype(str)
+        + ")"
+    )
     label_to_id = dict(zip(df_j2["label"], df_j2["jugador_id"]))
 
     jugador_label = st.selectbox("Jugador", df_j2["label"].tolist())
     jugador_id = label_to_id[jugador_label]
     j = df_j2[df_j2["jugador_id"].astype(str) == str(jugador_id)].iloc[0]
 
-    # ficha
     a, b, c, d = st.columns(4)
     a.metric("Puesto", str(j["puesto"]))
     b.metric("Club (préstamo)", str(j["club_prestamo"]))
-    c.metric("Retorno", str(j["fecha_retorno"]))
-    d.metric("Fin contrato AAAJ", str(j["fin_contrato_aaaj"]))
+    c.metric("País / División", f"{str(j.get('pais_prestamo',''))} — {str(j.get('division_prestamo',''))}")
+    d.metric("Retorno", str(j["fecha_retorno"]))
 
+    st.write("**Fin contrato AAAJ:**", str(j["fin_contrato_aaaj"]))
     st.write("**Opción de compra:**", "Sí" if bool(j["opcion_compra"]) else "No")
     if str(j.get("observaciones", "")).strip():
         st.info(f"**Observaciones:** {str(j['observaciones'])}")
 
-    # histórico
     df_player = df_s[df_s["jugador_id"].astype(str) == str(jugador_id)].copy()
     df_player = normalizar_seguimiento(df_player)
 
@@ -560,7 +637,6 @@ elif page == pages[3]:
     st.markdown("### Histórico semanal")
     st.dataframe(df_player[show_cols], use_container_width=True, hide_index=True)
 
-    # gráficos simples
     st.markdown("### Tendencias")
     g1, g2 = st.columns(2)
     with g1:
@@ -578,10 +654,9 @@ else:
     st.subheader("⚙️ Administración / Export")
 
     st.markdown("### Editar hoja de seguimiento (tabla)")
-    st.caption("Podés corregir registros (ej: cambiar una semana) y luego guardar. Evitá borrar columnas.")
+    st.caption("Esta es la única tabla editable. Si preferís, después lo pasamos a edición por formulario también.")
 
     df_s_edit = df_s.copy()
-    # columnas más útiles primero
     cols_front = [
         "week_end", "jugador_id", "partidos", "minutos",
         "goles_marcados", "goles_encajados",
@@ -596,9 +671,7 @@ else:
         df_s_show,
         use_container_width=True,
         num_rows="dynamic",
-        column_config={
-            "week_end": st.column_config.DateColumn("Semana (week_end)"),
-        },
+        column_config={"week_end": st.column_config.DateColumn("Semana (week_end)")},
         disabled=["registro_id"],
     )
 
@@ -607,10 +680,8 @@ else:
         if st.button("💾 Guardar cambios (Seguimiento)", type="primary"):
             df_new = edited.copy()
             df_new["updated_at"] = hoy_str()
-            # created_at si no existe
             if "created_at" in df_new.columns:
                 df_new["created_at"] = df_new["created_at"].replace("", np.nan).fillna(hoy_str())
-            # asegurar columnas
             for c in REQUIRED_SEGUIMIENTO_COLS:
                 if c not in df_new.columns:
                     df_new[c] = ""
@@ -620,26 +691,15 @@ else:
 
     with c2:
         st.markdown("### Export")
-        df_j_export = df_j.copy()
-        df_s_export = df_s.copy()
-
         st.download_button(
             "⬇️ Descargar jugadores (CSV)",
-            data=df_j_export.to_csv(index=False).encode("utf-8"),
+            data=df_j.to_csv(index=False).encode("utf-8"),
             file_name="jugadores.csv",
             mime="text/csv",
         )
         st.download_button(
             "⬇️ Descargar seguimiento (CSV)",
-            data=df_s_export.to_csv(index=False).encode("utf-8"),
+            data=df_s.to_csv(index=False).encode("utf-8"),
             file_name="seguimiento.csv",
             mime="text/csv",
         )
-
-    st.markdown("---")
-    st.markdown("### Tips")
-    st.write(
-        "- Si van a ser varios cargando, este enfoque funciona bien.\n"
-        "- Si en algún momento quieren más robustez (permisos por usuario / auditoría), migrar a Postgres es directo.\n"
-        "- Si querés, después te agrego: alertas (vencimientos), 'semanas sin update', y un mini reporte PDF por jugador."
-    )
