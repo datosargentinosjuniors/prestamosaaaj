@@ -14,7 +14,7 @@ import uuid
 # Configuración Streamlit
 # =========================
 st.set_page_config(page_title="Seguimiento de Préstamos", layout="wide")
-st.title("📌 Seguimiento de Préstamos (Google Sheets)")
+st.title("📌 Seguimiento de Préstamos - Secretaría Técnica")
 
 # =========================
 # Google Sheets: conexión
@@ -512,12 +512,12 @@ if page == pages[0]:
 
             # Borrado definitivo (doble confirmación)
             with col2:
-                st.markdown("**Eliminar definitivamente (peligroso)**")
-                st.caption("Esto borra al jugador y TODOS sus registros de seguimiento.")
+                st.markdown("**Eliminar definitivamente**")
+                st.caption("Esto borra al jugador y todos sus registros de seguimiento.")
                 confirm_text = st.text_input(
-                    "Escribí ELIMINAR para confirmar",
+                    "Escribí 'Eliminar' para confirmar",
                     key="confirm_eliminar",
-                    placeholder="ELIMINAR",
+                    placeholder="Eliminar",
                 )
                 if st.button("🗑️ Eliminar definitivamente", type="primary", disabled=(confirm_text.strip().upper() != "ELIMINAR")):
                     dfj_new, dfs_new = eliminar_jugador_hard(df_j, df_s, jugador_id)
