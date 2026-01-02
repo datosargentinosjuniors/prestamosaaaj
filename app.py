@@ -111,7 +111,6 @@ REQUIRED_SEGUIMIENTO_COLS = [
     "updated_at",
 ]
 
-
 # =========================
 # Utilidades
 # =========================
@@ -158,12 +157,7 @@ def is_gk(puesto: str) -> bool:
 
 
 def pretty_df(df: pd.DataFrame, cols: list, hide_internal_ids: bool = False) -> pd.DataFrame:
-    """
-    Devuelve un df solo con 'cols' y renombrado con DISPLAY_LABELS para UI.
-    Si hide_internal_ids=True, oculta columnas de IDs si están en cols.
-    """
     cols2 = cols.copy()
-
     if hide_internal_ids:
         cols2 = [c for c in cols2 if c not in ["jugador_id", "registro_id"]]
 
@@ -341,6 +335,28 @@ def upsert_jugador(df_j, jugador_id, payload: dict):
     return df_new
 
 
+def baja_jugador_soft(df_j: pd.DataFrame, jugador_id: str, motivo: str = "") -> pd.DataFrame:
+    """Marca el jugador como Rescindido (baja lógica)."""
+    df_new = df_j.copy()
+    mask = df_new["jugador_id"].astype(str) == str(jugador_id)
+    if not mask.any():
+        return df_new
+    df_new.loc[mask, "estado"] = "Rescindido"
+    if motivo.strip():
+        obs_old = df_new.loc[mask, "observaciones"].astype(str).fillna("").values[0]
+        add = f"[Baja] {motivo.strip()}"
+        df_new.loc[mask, "observaciones"] = (obs_old + "\n" + add).strip() if obs_old else add
+    df_new.loc[mask, "updated_at"] = hoy_str()
+    return df_new
+
+
+def eliminar_jugador_hard(df_j: pd.DataFrame, df_s: pd.DataFrame, jugador_id: str):
+    """Elimina definitivamente jugador + registros de seguimiento."""
+    dfj = df_j[df_j["jugador_id"].astype(str) != str(jugador_id)].copy()
+    dfs = df_s[df_s["jugador_id"].astype(str) != str(jugador_id)].copy()
+    return dfj, dfs
+
+
 # =========================
 # UI: Navegación
 # =========================
@@ -439,6 +455,7 @@ if page == pages[0]:
             def _date_or_default(x, default):
                 return x if isinstance(x, date) else default
 
+            # Form de edición
             with st.form("form_editar_jugador", clear_on_submit=False):
                 nombre = st.text_input("Nombre", value=str(j.get("nombre", "")))
                 puesto_val = str(j.get("puesto", PUESTOS[0]))
@@ -478,6 +495,36 @@ if page == pages[0]:
                         df_new = upsert_jugador(df_j, jugador_id, payload)
                         save_jugadores(df_new)
                         st.success("Cambios guardados ✅")
+
+            st.markdown("---")
+            st.markdown("### Acciones sobre el jugador")
+
+            col1, col2 = st.columns([1, 1], gap="large")
+
+            # Baja lógica
+            with col1:
+                st.markdown("**Dar de baja (recomendado)**")
+                motivo = st.text_input("Motivo / nota de baja", key="motivo_baja", placeholder="Ej: Fin de préstamo / rescisión / etc.")
+                if st.button("🚫 Dar de baja (Rescindido)", type="secondary"):
+                    df_new = baja_jugador_soft(df_j, jugador_id, motivo=motivo)
+                    save_jugadores(df_new)
+                    st.success("Jugador dado de baja (estado: Rescindido) ✅")
+
+            # Borrado definitivo (doble confirmación)
+            with col2:
+                st.markdown("**Eliminar definitivamente (peligroso)**")
+                st.caption("Esto borra al jugador y TODOS sus registros de seguimiento.")
+                confirm_text = st.text_input(
+                    "Escribí ELIMINAR para confirmar",
+                    key="confirm_eliminar",
+                    placeholder="ELIMINAR",
+                )
+                if st.button("🗑️ Eliminar definitivamente", type="primary", disabled=(confirm_text.strip().upper() != "ELIMINAR")):
+                    dfj_new, dfs_new = eliminar_jugador_hard(df_j, df_s, jugador_id)
+                    save_jugadores(dfj_new)
+                    save_seguimiento(dfs_new)
+                    st.success("Jugador y registros eliminados ✅")
+                    st.info("Actualizá la página o elegí otro jugador en el selector.")
 
     st.markdown("---")
     st.markdown("### Tabla de jugadores (visualización)")
@@ -646,12 +693,6 @@ elif page == pages[2]:
     ]
     st.dataframe(pretty_df(df_view, show_cols, hide_internal_ids=True), use_container_width=True, hide_index=True)
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Jugadores en vista", int(df_view.shape[0]))
-    m2.metric("Minutos totales", int(df_view["minutos_total"].sum()))
-    m3.metric("Partidos totales", int(pd.to_numeric(df_view["partidos_total"], errors="coerce").fillna(0).sum()))
-    m4.metric("Rojas totales", int(pd.to_numeric(df_view["rojas_total"], errors="coerce").fillna(0).sum()))
-
 # =========================
 # Página 4: Vista individual
 # =========================
@@ -717,7 +758,7 @@ else:
     st.subheader("⚙️ Administración / Export")
 
     st.markdown("### Editar hoja de seguimiento (tabla)")
-    st.caption("Tabla editable para correcciones. Los encabezados se muestran institucionales; se guarda a Sheets con columnas técnicas.")
+    st.caption("Tabla editable para correcciones. Encabezados prolijos (institucional) + guardado en Sheets con columnas técnicas.")
 
     df_s_edit = df_s.copy()
     cols_front = [
@@ -730,7 +771,6 @@ else:
     cols_rest = [c for c in df_s_edit.columns if c not in cols_front]
     df_s_show = df_s_edit[cols_front + cols_rest].copy()
 
-    # Data editor con columnas visibles prolijas (pero guardamos con nombres técnicos)
     edited_pretty = st.data_editor(
         pretty_df(df_s_show, cols_front + cols_rest, hide_internal_ids=False),
         use_container_width=True,
@@ -739,35 +779,31 @@ else:
         disabled=[DISPLAY_LABELS.get("registro_id", "ID registro")],
     )
 
-    # Convertir de vuelta a nombres técnicos para guardar
     inverse_labels = {v: k for k, v in DISPLAY_LABELS.items()}
     edited = edited_pretty.rename(columns={c: inverse_labels.get(c, c) for c in edited_pretty.columns})
 
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        if st.button("💾 Guardar cambios (Seguimiento)", type="primary"):
-            df_new = edited.copy()
-            df_new["updated_at"] = hoy_str()
-            if "created_at" in df_new.columns:
-                df_new["created_at"] = df_new["created_at"].replace("", np.nan).fillna(hoy_str())
-            for c in REQUIRED_SEGUIMIENTO_COLS:
-                if c not in df_new.columns:
-                    df_new[c] = ""
-            df_new = df_new[REQUIRED_SEGUIMIENTO_COLS]
-            save_seguimiento(df_new)
-            st.success("Seguimiento guardado ✅")
+    if st.button("💾 Guardar cambios (Seguimiento)", type="primary"):
+        df_new = edited.copy()
+        df_new["updated_at"] = hoy_str()
+        if "created_at" in df_new.columns:
+            df_new["created_at"] = df_new["created_at"].replace("", np.nan).fillna(hoy_str())
+        for c in REQUIRED_SEGUIMIENTO_COLS:
+            if c not in df_new.columns:
+                df_new[c] = ""
+        df_new = df_new[REQUIRED_SEGUIMIENTO_COLS]
+        save_seguimiento(df_new)
+        st.success("Seguimiento guardado ✅")
 
-    with c2:
-        st.markdown("### Export")
-        st.download_button(
-            "⬇️ Descargar jugadores (CSV)",
-            data=df_j.to_csv(index=False).encode("utf-8"),
-            file_name="jugadores.csv",
-            mime="text/csv",
-        )
-        st.download_button(
-            "⬇️ Descargar seguimiento (CSV)",
-            data=df_s.to_csv(index=False).encode("utf-8"),
-            file_name="seguimiento.csv",
-            mime="text/csv",
-        )
+    st.markdown("### Export")
+    st.download_button(
+        "⬇️ Descargar jugadores (CSV)",
+        data=df_j.to_csv(index=False).encode("utf-8"),
+        file_name="jugadores.csv",
+        mime="text/csv",
+    )
+    st.download_button(
+        "⬇️ Descargar seguimiento (CSV)",
+        data=df_s.to_csv(index=False).encode("utf-8"),
+        file_name="seguimiento.csv",
+        mime="text/csv",
+    )
