@@ -99,7 +99,7 @@ REQUIRED_JUGADORES_COLS = [
     "updated_at",
 ]
 
-# ✅ Agregamos week_start (Semana inicio)
+# ✅ Semana con inicio y fin
 REQUIRED_SEGUIMIENTO_COLS = [
     "registro_id",
     "jugador_id",
@@ -155,6 +155,7 @@ def get_week_start(d=None):
 
 
 def get_week_end_from_start(week_start: date) -> date:
+    """Domingo de esa semana (inicio + 6)"""
     return week_start + timedelta(days=6)
 
 
@@ -180,7 +181,7 @@ def pretty_df(df: pd.DataFrame, cols: list, hide_internal_ids: bool = False) -> 
 
 
 def kpi_card(title: str, value: str):
-    """KPI compacto (más chico que st.metric) para que entren valores largos."""
+    """KPI compacto para que entren valores largos."""
     st.markdown(
         f"""
         <div style="
@@ -199,34 +200,54 @@ def kpi_card(title: str, value: str):
     )
 
 
-def bar_chart_with_labels(df: pd.DataFrame, x_col: str, y_col: str, title: str):
-    """Barras rojas con labels blancos centrados."""
+def semana_label(ws, we):
+    """Etiqueta 'dd/mm/yyyy → dd/mm/yyyy'."""
+    ws2 = ws if isinstance(ws, date) else _parse_date_safe(ws)
+    we2 = we if isinstance(we, date) else _parse_date_safe(we)
+    if isinstance(ws2, date) and isinstance(we2, date):
+        return f"{ws2.strftime('%d/%m/%Y')} → {we2.strftime('%d/%m/%Y')}"
+    if isinstance(ws2, date):
+        return ws2.strftime("%d/%m/%Y")
+    return str(ws)
+
+
+def barh_with_labels_weekrange(df: pd.DataFrame, week_start_col: str, week_end_col: str, value_col: str, title: str):
+    """
+    Barras horizontales rojas con valores blancos centrados.
+    X = valores, Y = 'inicio → fin'
+    """
     if df.empty:
         st.info("No hay datos para graficar.")
         return
 
     dd = df.copy()
-    dd = dd.sort_values(x_col)
 
-    x = dd[x_col].astype(str).tolist()
-    y = pd.to_numeric(dd[y_col], errors="coerce").fillna(0).astype(int).tolist()
+    # Orden cronológico por inicio, si existe; sino por fin
+    if week_start_col in dd.columns:
+        dd = dd.sort_values(week_start_col)
+    else:
+        dd = dd.sort_values(week_end_col)
 
-    fig, ax = plt.subplots(figsize=(8, 3.6))
-    bars = ax.bar(x, y, color="#d60000")  # rojo
+    y_labels = [semana_label(ws, we) for ws, we in zip(dd[week_start_col], dd[week_end_col])]
+    x_vals = pd.to_numeric(dd[value_col], errors="coerce").fillna(0).astype(int).tolist()
+
+    # Alto dinámico según cantidad de semanas
+    fig_h = max(3.4, 0.48 * len(dd))
+    fig, ax = plt.subplots(figsize=(9.5, fig_h))
+
+    bars = ax.barh(y_labels, x_vals, color="#d60000")  # rojo
 
     ax.set_title(title)
     ax.set_xlabel("")
     ax.set_ylabel("")
-    ax.tick_params(axis="x", rotation=45)
 
-    # Labels dentro de la barra (blanco, centrado)
-    for rect, val in zip(bars, y):
-        height = rect.get_height()
-        if height == 0:
+    # Valor centrado dentro de la barra (blanco)
+    for rect, val in zip(bars, x_vals):
+        if val == 0:
             continue
         ax.text(
-            rect.get_x() + rect.get_width() / 2.0,
-            height / 2.0,
+            rect.get_width() / 2.0,
+            rect.get_y() + rect.get_height() / 2.0,
             f"{val}",
             ha="center",
             va="center",
@@ -235,7 +256,6 @@ def bar_chart_with_labels(df: pd.DataFrame, x_col: str, y_col: str, title: str):
             fontweight="bold",
         )
 
-    # Ajuste visual
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     fig.tight_layout()
@@ -440,12 +460,9 @@ def make_excel_bytes(df_j: pd.DataFrame, df_s: pd.DataFrame) -> bytes:
         df_j_export = df_j.copy()
         df_s_export = df_s.copy()
 
-        # Export con headers institucionales (más amigable)
         df_j_export.to_excel(writer, index=False, sheet_name="Jugadores")
         df_s_export.to_excel(writer, index=False, sheet_name="Seguimiento")
 
-        # También export “vista” ya renombrada (institucional)
-        # (sirve si quieren imprimir/leer sin columnas técnicas)
         try:
             cols_j_view = [
                 "nombre", "puesto", "fecha_nacimiento",
@@ -714,7 +731,6 @@ elif page == pages[1]:
     )
     label_to_id = dict(zip(activos["label"], activos["jugador_id"]))
 
-    # ✅ Layout: Formulario primero, tabla debajo
     st.markdown("### Cargar semana")
 
     jugador_label = st.selectbox("Jugador", activos["label"].tolist())
@@ -723,7 +739,6 @@ elif page == pages[1]:
     puesto = str(jugador_row["puesto"])
 
     with st.form("form_carga_semanal", clear_on_submit=True):
-        # ✅ Semana por rango: elegís lunes (inicio) y se calcula fin
         week_start = st.date_input(
             "Semana (inicio - Lunes)",
             value=get_week_start(),
@@ -748,10 +763,9 @@ elif page == pages[1]:
 
         submit = st.form_submit_button("Guardar semana")
         if submit:
-            # Evita duplicados por jugador + semana (inicio)
             exists = (
                 (df_s["jugador_id"].astype(str) == str(jugador_id)) &
-                (df_s.get("week_start", pd.Series([None]*len(df_s))).apply(_parse_date_safe) == week_start)
+                (df_s.get("week_start", pd.Series([None] * len(df_s))).apply(_parse_date_safe) == week_start)
             )
             if exists.any():
                 st.error("Ya existe un registro para ese jugador en esa semana. Corregilo desde Admin/Export.")
@@ -784,7 +798,6 @@ elif page == pages[1]:
         st.info("Aún no hay cargas para este jugador.")
     else:
         df_player = normalizar_seguimiento(df_player)
-        # orden: más reciente primero por week_start si existe, sino por week_end
         sort_col = "week_start" if "week_start" in df_player.columns else "week_end"
         df_player = df_player.sort_values(sort_col, ascending=False)
 
@@ -891,7 +904,7 @@ elif page == pages[3]:
     jugador_id = label_to_id[jugador_label]
     j = df_j2[df_j2["jugador_id"].astype(str) == str(jugador_id)].iloc[0]
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5, c6 = st.columns(5)
     with c1:
         kpi_card("Puesto", str(j.get("puesto", "")))
     with c2:
@@ -900,9 +913,11 @@ elif page == pages[3]:
         kpi_card("País / División", f"{str(j.get('pais_prestamo',''))} — {str(j.get('division_prestamo',''))}")
     with c4:
         kpi_card("Fecha de retorno", str(j.get("fecha_retorno", "")))
+    with c5:
+        kpi_card("Fin de contrato en AAAJ", "str(j.get("fin_contrato_aaaj", "")))
 
-    st.write("**Fin de contrato AAAJ:**", str(j.get("fin_contrato_aaaj", "")))
     st.write("**Opción de compra:**", "Sí" if bool(j.get("opcion_compra", False)) else "No")
+                 
     if str(j.get("observaciones", "")).strip():
         st.info(f"**Observaciones:** {str(j.get('observaciones',''))}")
 
@@ -913,9 +928,8 @@ elif page == pages[3]:
         st.warning("Este jugador aún no tiene cargas semanales.")
         st.stop()
 
-    # Orden cronológico por inicio de semana si existe
-    sort_col = "week_start" if "week_start" in df_player.columns else "week_end"
-    df_player = df_player.sort_values(sort_col)
+    # Orden cronológico
+    df_player = df_player.sort_values("week_start" if "week_start" in df_player.columns else "week_end")
 
     show_cols = [
         "week_start", "week_end",
@@ -927,19 +941,14 @@ elif page == pages[3]:
     st.markdown("### Histórico semanal")
     st.dataframe(pretty_df(df_player, show_cols, hide_internal_ids=True), use_container_width=True, hide_index=True)
 
-    st.markdown("### Tendencias (barras)")
-    # Graficamos contra week_start (si existe) para que quede claro el rango
-    xcol = "week_start" if "week_start" in df_player.columns else "week_end"
+    st.markdown("### Tendencias (barras horizontales)")
+    # ✅ Uno debajo del otro
+    barh_with_labels_weekrange(df_player, "week_start", "week_end", "minutos", "Minutos por semana")
 
-    colg1, colg2 = st.columns(2)
-    with colg1:
-        bar_chart_with_labels(df_player, xcol, "minutos", "Minutos por semana")
-
-    with colg2:
-        if is_gk(str(j.get("puesto", ""))):
-            bar_chart_with_labels(df_player, xcol, "goles_encajados", "Goles encajados por semana")
-        else:
-            bar_chart_with_labels(df_player, xcol, "goles_marcados", "Goles por semana")
+    if is_gk(str(j.get("puesto", ""))):
+        barh_with_labels_weekrange(df_player, "week_start", "week_end", "goles_encajados", "Goles encajados por semana")
+    else:
+        barh_with_labels_weekrange(df_player, "week_start", "week_end", "goles_marcados", "Goles por semana")
 
 # =========================
 # Página 5: Admin / export
