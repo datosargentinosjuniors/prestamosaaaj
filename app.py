@@ -395,7 +395,8 @@ if page == pages[0]:
         with st.form("form_crear_jugador", clear_on_submit=True):
             nombre = st.text_input("Nombre", placeholder="Escribe nombre del jugador.")
             puesto = st.selectbox("Puesto", PUESTOS)
-            fecha_nac = st.date_input("Fecha de nacimiento")
+            
+            fecha_nac = st.date_input("Fecha de nacimiento", value=date.today(), min_value=date(1950, 1, 1), max_value=date.today())
 
             pais = st.text_input("País (préstamo)", placeholder="País en donde jugará el jugador.")
             division = st.selectbox("División", DIVISIONES, index=0)
