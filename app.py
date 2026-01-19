@@ -54,6 +54,7 @@ DISPLAY_LABELS = {
     "division_prestamo": "División",
     "club_prestamo": "Club",
     "opcion_compra": "Opción de compra",
+    "posibilidad_repesca": "Posibilidad de repesca",
     "fecha_retorno": "Fecha de retorno",
     "fin_contrato_aaaj": "Fin de contrato AAAJ",
     "estado": "Estado",
@@ -97,6 +98,7 @@ REQUIRED_JUGADORES_COLS = [
     "division_prestamo",
     "club_prestamo",
     "opcion_compra",
+    "posibilidad_repesca",
     "fecha_retorno",
     "fin_contrato_aaaj",
     "estado",
@@ -403,6 +405,14 @@ def save_reportes(df_r):
 # =========================
 # Normalización
 # =========================
+def _coerce_bool_series(s: pd.Series) -> pd.Series:
+    return (
+        s.astype(str).str.strip().str.lower()
+        .map({"true": True, "false": False, "1": True, "0": False, "si": True, "sí": True, "no": False})
+        .fillna(False)
+    )
+
+
 def normalizar_jugadores(df_j):
     if df_j.empty:
         df_j = pd.DataFrame(columns=REQUIRED_JUGADORES_COLS)
@@ -411,13 +421,12 @@ def normalizar_jugadores(df_j):
         if col in df_j.columns:
             df_j[col] = df_j[col].apply(_parse_date_safe)
 
+    # booleanos
     if "opcion_compra" in df_j.columns:
-        df_j["opcion_compra"] = (
-            df_j["opcion_compra"]
-            .astype(str).str.strip().str.lower()
-            .map({"true": True, "false": False, "1": True, "0": False, "si": True, "sí": True, "no": False})
-            .fillna(False)
-        )
+        df_j["opcion_compra"] = _coerce_bool_series(df_j["opcion_compra"])
+    if "posibilidad_repesca" in df_j.columns:
+        df_j["posibilidad_repesca"] = _coerce_bool_series(df_j["posibilidad_repesca"])
+
     return df_j
 
 
@@ -507,7 +516,8 @@ def make_excel_bytes(df_j: pd.DataFrame, df_s: pd.DataFrame, df_r: pd.DataFrame)
             cols_j_view = [
                 "nombre", "puesto", "fecha_nacimiento",
                 "pais_prestamo", "division_prestamo", "club_prestamo",
-                "estado", "opcion_compra", "fecha_retorno", "fin_contrato_aaaj",
+                "estado", "opcion_compra", "posibilidad_repesca",
+                "fecha_retorno", "fin_contrato_aaaj",
                 "observaciones", "jugador_id"
             ]
             pretty_df(df_j_export, cols_j_view, hide_internal_ids=False).to_excel(
@@ -588,6 +598,7 @@ if page == pages[0]:
             club_prestamo = st.text_input("Club (préstamo)", placeholder="Escribe el club en el que está a prestamo.")
 
             opcion_compra = st.checkbox("¿Tiene opción de compra?")
+            posibilidad_repesca = st.checkbox("¿Tiene posibilidad de repesca?")
             fecha_retorno = st.date_input("Fecha de retorno", value=date.today() + relativedelta(months=6))
             fin_contrato = st.date_input("Fin de contrato con AAAJ", value=date.today() + relativedelta(years=2))
             estado = st.selectbox("Estado", ["Activo", "Finalizado", "Rescindido"])
@@ -607,6 +618,7 @@ if page == pages[0]:
                         "division_prestamo": division,
                         "club_prestamo": club_prestamo.strip(),
                         "opcion_compra": bool(opcion_compra),
+                        "posibilidad_repesca": bool(posibilidad_repesca),
                         "fecha_retorno": fecha_retorno,
                         "fin_contrato_aaaj": fin_contrato,
                         "estado": estado,
@@ -664,6 +676,8 @@ if page == pages[0]:
                 club_prestamo = st.text_input("Club (préstamo)", value=str(j.get("club_prestamo", "")))
 
                 opcion_compra = st.checkbox("Tiene opción de compra", value=bool(j.get("opcion_compra", False)))
+                posibilidad_repesca = st.checkbox("Tiene posibilidad de repesca", value=bool(j.get("posibilidad_repesca", False)))
+
                 fecha_retorno = st.date_input(
                     "Fecha de retorno",
                     value=_date_or_default(j.get("fecha_retorno", pd.NaT), date.today() + relativedelta(months=6))
@@ -692,6 +706,7 @@ if page == pages[0]:
                             "division_prestamo": division,
                             "club_prestamo": club_prestamo.strip(),
                             "opcion_compra": bool(opcion_compra),
+                            "posibilidad_repesca": bool(posibilidad_repesca),
                             "fecha_retorno": fecha_retorno,
                             "fin_contrato_aaaj": fin_contrato,
                             "estado": estado,
@@ -749,7 +764,7 @@ if page == pages[0]:
         show_cols = [
             "nombre", "puesto",
             "pais_prestamo", "division_prestamo", "club_prestamo",
-            "estado", "opcion_compra",
+            "estado", "opcion_compra", "posibilidad_repesca",
             "fecha_retorno", "fin_contrato_aaaj",
             "observaciones", "jugador_id"
         ]
@@ -923,7 +938,7 @@ elif page == pages[2]:
         "amarillas_total", "rojas_total",
         "ultima_semana",
         "fecha_retorno", "fin_contrato_aaaj",
-        "opcion_compra",
+        "opcion_compra", "posibilidad_repesca",
     ]
     st.dataframe(pretty_df(df_view, show_cols, hide_internal_ids=True), use_container_width=True, hide_index=True)
 
@@ -952,7 +967,7 @@ elif page == pages[3]:
     jugador_id = label_to_id[jugador_label]
     j = df_j2[df_j2["jugador_id"].astype(str) == str(jugador_id)].iloc[0]
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     with c1:
         kpi_card("Puesto", str(j.get("puesto", "")))
     with c2:
@@ -965,6 +980,8 @@ elif page == pages[3]:
         kpi_card("Fin de contrato en AAAJ", str(j.get("fin_contrato_aaaj", "")))
     with c6:
         kpi_card("¿Tiene opción de compra?", "Sí" if bool(j.get("opcion_compra", False)) else "No")
+    with c7:
+        kpi_card("¿Posibilidad de repesca?", "Sí" if bool(j.get("posibilidad_repesca", False)) else "No")
 
     if str(j.get("observaciones", "")).strip():
         st.info(f"**Observaciones:** {str(j.get('observaciones',''))}")
@@ -1041,7 +1058,6 @@ elif page == pages[4]:
     if df_rep.empty:
         st.info("Este jugador aún no tiene reportes.")
     else:
-        # orden por fecha_creacion si está, sino por fecha_reporte
         if "fecha_creacion" in df_rep.columns and df_rep["fecha_creacion"].notna().any():
             df_rep = df_rep.sort_values("fecha_creacion", ascending=False)
         else:
@@ -1089,7 +1105,7 @@ elif page == pages[4]:
                     "jugador_id": str(jugador_id),
                     "titulo": titulo.strip(),
                     "fecha_reporte": date.today(),
-                    "fecha_creacion": now,  # timestamp (string)
+                    "fecha_creacion": now,
                     "contenido": contenido.strip(),
                     "created_at": now,
                     "updated_at": now,
