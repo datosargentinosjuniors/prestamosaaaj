@@ -107,9 +107,11 @@ REQUIRED_JUGADORES_COLS = [
     "updated_at",
 ]
 
+# ✅ Seguimiento (ahora incluye nombre)
 REQUIRED_SEGUIMIENTO_COLS = [
     "registro_id",
     "jugador_id",
+    "nombre",          # 👈 NUEVO
     "week_start",
     "week_end",
     "partidos",
@@ -123,10 +125,11 @@ REQUIRED_SEGUIMIENTO_COLS = [
     "updated_at",
 ]
 
-# ✅ Reportes (con título + fecha creación)
+# ✅ Reportes (ahora incluye nombre)
 REQUIRED_REPORTES_COLS = [
     "reporte_id",
     "jugador_id",
+    "nombre",          # 👈 NUEVO
     "titulo",
     "fecha_reporte",
     "fecha_creacion",
@@ -290,6 +293,56 @@ def barh_with_labels_weekrange(
 
 
 # =========================
+# Helper: nombre por jugador_id (para backfill / sync)
+# =========================
+def _map_nombre_por_id(df_j: pd.DataFrame) -> dict:
+    if df_j is None or df_j.empty:
+        return {}
+    jj = df_j.copy()
+    if "jugador_id" not in jj.columns:
+        return {}
+    if "nombre" not in jj.columns:
+        return {}
+    jj["jugador_id"] = jj["jugador_id"].astype(str)
+    jj["nombre"] = jj["nombre"].astype(str)
+    # si hay duplicados, nos quedamos con el último
+    jj = jj.dropna(subset=["jugador_id"]).drop_duplicates(subset=["jugador_id"], keep="last")
+    return dict(zip(jj["jugador_id"], jj["nombre"]))
+
+
+def ensure_nombre_in_related_tables(df_j: pd.DataFrame, df_s: pd.DataFrame, df_r: pd.DataFrame):
+    """
+    Garantiza que df_s y df_r tengan columna 'nombre' y la rellena desde df_j por jugador_id.
+    (No rompe si hay ids huérfanos: deja nombre vacío)
+    """
+    id2name = _map_nombre_por_id(df_j)
+
+    df_s2 = df_s.copy()
+    if "nombre" not in df_s2.columns:
+        df_s2["nombre"] = ""
+    if "jugador_id" in df_s2.columns:
+        df_s2["jugador_id"] = df_s2["jugador_id"].astype(str)
+        df_s2["nombre"] = df_s2["jugador_id"].map(id2name).fillna(df_s2["nombre"].astype(str)).fillna("")
+
+    df_r2 = df_r.copy()
+    if "nombre" not in df_r2.columns:
+        df_r2["nombre"] = ""
+    if "jugador_id" in df_r2.columns:
+        df_r2["jugador_id"] = df_r2["jugador_id"].astype(str)
+        df_r2["nombre"] = df_r2["jugador_id"].map(id2name).fillna(df_r2["nombre"].astype(str)).fillna("")
+
+    # asegurar columnas requeridas
+    for c in REQUIRED_SEGUIMIENTO_COLS:
+        if c not in df_s2.columns:
+            df_s2[c] = ""
+    for c in REQUIRED_REPORTES_COLS:
+        if c not in df_r2.columns:
+            df_r2[c] = ""
+
+    return df_s2[REQUIRED_SEGUIMIENTO_COLS].copy(), df_r2[REQUIRED_REPORTES_COLS].copy()
+
+
+# =========================
 # Google Sheets client
 # =========================
 @st.cache_resource
@@ -349,8 +402,8 @@ def _get_or_create_worksheet(sh, title, cols):
 def init_sheets():
     sh = get_workbook()
     ws_j = _get_or_create_worksheet(sh, "jugadores", REQUIRED_JUGADORES_COLS)
-    ws_s = _get_or_create_worksheet(sh, "seguimiento", REQUIRED_SEGUIMIENTO_COLS)
-    ws_r = _get_or_create_worksheet(sh, "reportes", REQUIRED_REPORTES_COLS)
+    ws_s = _get_or_create_worksheet(sh, "seguimiento", REQUIRED_SEGUIMIENTO_COLS)  # 👈 ahora incluye nombre
+    ws_r = _get_or_create_worksheet(sh, "reportes", REQUIRED_REPORTES_COLS)        # 👈 ahora incluye nombre
     return ws_j, ws_s, ws_r
 
 
@@ -525,7 +578,7 @@ def make_excel_bytes(df_j: pd.DataFrame, df_s: pd.DataFrame, df_r: pd.DataFrame)
             )
 
             cols_s_view = [
-                "week_start", "week_end",
+                "nombre", "week_start", "week_end",
                 "partidos", "minutos", "goles_marcados", "goles_encajados",
                 "amarillas", "rojas", "incidencias",
                 "jugador_id", "registro_id"
@@ -534,7 +587,7 @@ def make_excel_bytes(df_j: pd.DataFrame, df_s: pd.DataFrame, df_r: pd.DataFrame)
                 writer, index=False, sheet_name="Seguimiento (Vista)"
             )
 
-            cols_r_view = ["titulo", "fecha_reporte", "fecha_creacion", "contenido", "jugador_id", "reporte_id"]
+            cols_r_view = ["nombre", "titulo", "fecha_reporte", "fecha_creacion", "contenido", "jugador_id", "reporte_id"]
             pretty_df(df_r_export, cols_r_view, hide_internal_ids=False).to_excel(
                 writer, index=False, sheet_name="Reportes (Vista)"
             )
@@ -562,6 +615,7 @@ df_j = normalizar_jugadores(df_j_raw)
 df_s = normalizar_seguimiento(df_s_raw)
 df_r = normalizar_reportes(df_r_raw)
 
+# asegurar columnas mínimas
 for c in REQUIRED_JUGADORES_COLS:
     if c not in df_j.columns:
         df_j[c] = ""
@@ -571,6 +625,9 @@ for c in REQUIRED_SEGUIMIENTO_COLS:
 for c in REQUIRED_REPORTES_COLS:
     if c not in df_r.columns:
         df_r[c] = ""
+
+# ✅ Backfill/sync nombre en seguimiento y reportes SIEMPRE (para visualización/export)
+df_s, df_r = ensure_nombre_in_related_tables(df_j, df_s, df_r)
 
 # =========================
 # Página 1: Jugadores
@@ -714,7 +771,14 @@ if page == pages[0]:
                         }
                         df_new = upsert_jugador(df_j, jugador_id, payload)
                         save_jugadores(df_new)
-                        st.success("Cambios guardados ✅")
+
+                        # ✅ opcional: sincronizar y guardar nombre en seguimiento/reportes cuando cambia nombre
+                        df_j_tmp = normalizar_jugadores(df_new.copy())
+                        df_s_tmp, df_r_tmp = ensure_nombre_in_related_tables(df_j_tmp, df_s, df_r)
+                        save_seguimiento(df_s_tmp)
+                        save_reportes(df_r_tmp)
+
+                        st.success("Cambios guardados ✅ (nombre sincronizado en seguimiento/reportes)")
 
             st.markdown("---")
             st.markdown("### Acciones sobre el jugador")
@@ -801,6 +865,7 @@ elif page == pages[1]:
     jugador_id = label_to_id[jugador_label]
     jugador_row = activos.loc[activos["jugador_id"] == jugador_id].iloc[0]
     puesto = str(jugador_row["puesto"])
+    jugador_nombre = str(jugador_row.get("nombre", "")).strip()
 
     with st.form("form_carga_semanal", clear_on_submit=True):
         week_start = st.date_input(
@@ -838,6 +903,7 @@ elif page == pages[1]:
                 new_row = {
                     "registro_id": str(uuid.uuid4()),
                     "jugador_id": str(jugador_id),
+                    "nombre": jugador_nombre,  # ✅ GUARDA NOMBRE
                     "week_start": week_start,
                     "week_end": week_end,
                     "partidos": int(partidos),
@@ -851,6 +917,7 @@ elif page == pages[1]:
                     "updated_at": now,
                 }
                 df_s2 = pd.concat([df_s, pd.DataFrame([new_row])], ignore_index=True)
+                df_s2 = df_s2[REQUIRED_SEGUIMIENTO_COLS]
                 save_seguimiento(df_s2)
                 st.success("Carga guardada ✅")
 
@@ -865,6 +932,7 @@ elif page == pages[1]:
         df_player = df_player.sort_values("week_start", ascending=False)
 
         show_cols = [
+            "nombre",
             "week_start", "week_end",
             "partidos", "minutos",
             "goles_marcados", "goles_encajados",
@@ -996,6 +1064,7 @@ elif page == pages[3]:
     df_player = df_player.sort_values("week_start")
 
     show_cols = [
+        "nombre",
         "week_start", "week_end",
         "partidos", "minutos",
         "goles_marcados", "goles_encajados",
@@ -1050,6 +1119,13 @@ elif page == pages[4]:
     jugador_label = st.selectbox("Jugador", dfj2["label"].tolist())
     jugador_id = label_to_id[jugador_label]
 
+    # nombre para persistir en el reporte
+    jugador_nombre = ""
+    try:
+        jugador_nombre = str(dfj2.loc[dfj2["jugador_id"].astype(str) == str(jugador_id), "nombre"].iloc[0]).strip()
+    except Exception:
+        jugador_nombre = ""
+
     st.markdown("### Reportes existentes")
 
     df_rep = df_r[df_r["jugador_id"].astype(str) == str(jugador_id)].copy()
@@ -1103,6 +1179,7 @@ elif page == pages[4]:
                 new_row = {
                     "reporte_id": str(uuid.uuid4()),
                     "jugador_id": str(jugador_id),
+                    "nombre": jugador_nombre,  # ✅ GUARDA NOMBRE
                     "titulo": titulo.strip(),
                     "fecha_reporte": date.today(),
                     "fecha_creacion": now,
@@ -1111,6 +1188,7 @@ elif page == pages[4]:
                     "updated_at": now,
                 }
                 df_r_new = pd.concat([df_r, pd.DataFrame([new_row])], ignore_index=True)
+                df_r_new = df_r_new[REQUIRED_REPORTES_COLS]
                 save_reportes(df_r_new)
                 st.success("Reporte guardado ✅")
 
@@ -1120,12 +1198,16 @@ elif page == pages[4]:
 else:
     st.subheader("⚙️ Administración / Export")
 
-    st.markdown("### Editar hoja de seguimiento")
-    st.caption("Tabla editable para correcciones.")
+    # ✅ Aseguramos que nombre esté completo antes de mostrar/editar/exportar
+    df_s_sync, df_r_sync = ensure_nombre_in_related_tables(df_j, df_s, df_r)
 
-    df_s_edit = df_s.copy()
+    st.markdown("### Editar hoja de seguimiento")
+    st.caption("Tabla editable para correcciones. El nombre se recalcula por jugador_id al guardar.")
+
+    df_s_edit = df_s_sync.copy()
+
     cols_front = [
-        "week_start", "week_end", "jugador_id",
+        "week_start", "week_end", "jugador_id", "nombre",
         "partidos", "minutos",
         "goles_marcados", "goles_encajados",
         "amarillas", "rojas", "incidencias",
@@ -1143,7 +1225,10 @@ else:
             DISPLAY_LABELS.get("week_start", "Semana (inicio)"): st.column_config.DateColumn("Semana (inicio)"),
             DISPLAY_LABELS.get("week_end", "Semana (fin)"): st.column_config.DateColumn("Semana (fin)"),
         },
-        disabled=[DISPLAY_LABELS.get("registro_id", "ID registro")],
+        disabled=[
+            DISPLAY_LABELS.get("registro_id", "ID registro"),
+            DISPLAY_LABELS.get("nombre", "Nombre"),  # 👈 nombre no editable
+        ],
     )
 
     inverse_labels = {v: k for k, v in DISPLAY_LABELS.items()}
@@ -1154,6 +1239,10 @@ else:
         df_new["updated_at"] = hoy_str()
         if "created_at" in df_new.columns:
             df_new["created_at"] = df_new["created_at"].replace("", np.nan).fillna(hoy_str())
+
+        # ✅ Recalcular nombre por jugador_id antes de guardar
+        df_new, _ = ensure_nombre_in_related_tables(df_j, df_new, df_r_sync)
+
         for c in REQUIRED_SEGUIMIENTO_COLS:
             if c not in df_new.columns:
                 df_new[c] = ""
@@ -1164,10 +1253,20 @@ else:
     st.markdown("---")
     st.markdown("### Export (Excel)")
 
-    excel_bytes = make_excel_bytes(df_j, df_s, df_r)
+    # ✅ Exporta con nombre en Seguimiento y Reportes
+    excel_bytes = make_excel_bytes(df_j, df_s_sync, df_r_sync)
     st.download_button(
         "⬇️ Descargar Excel (Jugadores + Seguimiento + Reportes)",
         data=excel_bytes,
         file_name="prestamos_aaaj.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+    st.markdown("---")
+    st.markdown("### (Opcional) Sincronizar y guardar nombres en Sheets")
+    st.caption("Esto fuerza a que todos los registros existentes en 'seguimiento' y 'reportes' queden con la columna nombre completa en el Google Sheet.")
+    if st.button("🔄 Sincronizar nombres en seguimiento/reportes", type="secondary"):
+        df_s_sync2, df_r_sync2 = ensure_nombre_in_related_tables(df_j, df_s, df_r)
+        save_seguimiento(df_s_sync2)
+        save_reportes(df_r_sync2)
+        st.success("Nombres sincronizados y guardados ✅")
