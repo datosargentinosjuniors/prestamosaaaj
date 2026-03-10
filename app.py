@@ -978,6 +978,10 @@ elif page == pages[2]:
         rojas_total=("rojas", "sum"),
         ultima_semana=("week_end", "max"),
     )
+    agg = agg.merge(
+    df_j2[["jugador_id", "nombre", "cesion_derechos"]],
+    on="jugador_id",
+    how="left")
 
     base = df_j2.merge(agg, on="jugador_id", how="left")
 
