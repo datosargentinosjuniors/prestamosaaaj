@@ -618,7 +618,7 @@ pages = [
     "📝 Reportes",
     "⚙️ Administración / Export",
 ]
-page = st.sidebar.radio("Navegación", pages)
+page = st.sidebar.radio("Navegación", pages, key="menu_principal")
 
 df_j_raw, df_s_raw, df_r_raw = load_data()
 df_j = normalizar_jugadores(df_j_raw)
@@ -1883,7 +1883,7 @@ pages = [
     "📝 Reportes",
     "⚙️ Administración / Export",
 ]
-page = st.sidebar.radio("Navegación", pages)
+page = st.sidebar.radio("Navegación", pages, key="menu_principal")
 
 df_j_raw, df_s_raw, df_r_raw = load_data()
 df_j = normalizar_jugadores(df_j_raw)
