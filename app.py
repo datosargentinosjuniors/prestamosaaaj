@@ -1014,7 +1014,7 @@ elif page == pages[2]:
 
     show_cols = [
         "nombre", "puesto",
-        "pais_prestamo", "division_prestamo", "club_prestamo",
+        "pais_prestamo", "division_prestamo", "club_prestamo","cesion_derechos",
         "estado",
         "partidos_total", "minutos_total",
         "goles_total", "encajados_total",
