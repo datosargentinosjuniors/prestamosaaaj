@@ -53,9 +53,11 @@ DISPLAY_LABELS = {
     "pais_prestamo": "País",
     "division_prestamo": "División",
     "club_prestamo": "Club",
+    "cesion_derechos": "Cesión de derechos",
     "opcion_compra": "Opción de compra",
     "posibilidad_repesca": "Posibilidad de repesca",
     "fecha_retorno": "Fecha de retorno",
+    "equipo_jugo": "Equipo jugó",
     "fin_contrato_aaaj": "Fin de contrato AAAJ",
     "estado": "Estado",
     "observaciones": "Observaciones",
@@ -97,6 +99,7 @@ REQUIRED_JUGADORES_COLS = [
     "pais_prestamo",
     "division_prestamo",
     "club_prestamo",
+    "cesion_derechos",
     "opcion_compra",
     "posibilidad_repesca",
     "fecha_retorno",
@@ -111,9 +114,10 @@ REQUIRED_JUGADORES_COLS = [
 REQUIRED_SEGUIMIENTO_COLS = [
     "registro_id",
     "jugador_id",
-    "nombre",          # 👈 NUEVO
+    "nombre",
     "week_start",
     "week_end",
+    "equipo_jugo",
     "partidos",
     "minutos",
     "goles_marcados",
@@ -653,6 +657,7 @@ if page == pages[0]:
             pais = st.text_input("País (préstamo)", placeholder="País en donde jugará el jugador.")
             division = st.selectbox("División", DIVISIONES, index=0)
             club_prestamo = st.text_input("Club (préstamo)", placeholder="Escribe el club en el que está a prestamo.")
+            cesion_derechos = st.text_input("Cesión de derechos",placeholder="Ej: 50% AAAJ / 50% club")
 
             opcion_compra = st.checkbox("¿Tiene opción de compra?")
             posibilidad_repesca = st.checkbox("¿Tiene posibilidad de repesca?")
@@ -680,6 +685,7 @@ if page == pages[0]:
                         "fin_contrato_aaaj": fin_contrato,
                         "estado": estado,
                         "observaciones": obs.strip(),
+                        "cesion_derechos": cesion_derechos.strip(),
                     }
                     df_new = upsert_jugador(df_j, jugador_id, payload)
                     save_jugadores(df_new)
@@ -731,6 +737,7 @@ if page == pages[0]:
                     index=DIVISIONES.index(div_val) if div_val in DIVISIONES else 0
                 )
                 club_prestamo = st.text_input("Club (préstamo)", value=str(j.get("club_prestamo", "")))
+                cesion_derechos = st.text_input( "Cesión de derechos", value=str(j.get("cesion_derechos", "")))
 
                 opcion_compra = st.checkbox("Tiene opción de compra", value=bool(j.get("opcion_compra", False)))
                 posibilidad_repesca = st.checkbox("Tiene posibilidad de repesca", value=bool(j.get("posibilidad_repesca", False)))
@@ -768,6 +775,7 @@ if page == pages[0]:
                             "fin_contrato_aaaj": fin_contrato,
                             "estado": estado,
                             "observaciones": obs.strip(),
+                            "cesion_derechos": cesion_derechos.strip(),
                         }
                         df_new = upsert_jugador(df_j, jugador_id, payload)
                         save_jugadores(df_new)
@@ -831,6 +839,7 @@ if page == pages[0]:
             "estado", "opcion_compra", "posibilidad_repesca",
             "fecha_retorno", "fin_contrato_aaaj",
             "observaciones", "jugador_id"
+            "cesion_derechos",
         ]
         st.dataframe(
             pretty_df(df_view, show_cols, hide_internal_ids=False),
@@ -875,7 +884,8 @@ elif page == pages[1]:
         )
         week_end = get_week_end_from_start(week_start)
         st.caption(f"Semana seleccionada: **{week_start.strftime('%d/%m/%Y')}** → **{week_end.strftime('%d/%m/%Y')}**")
-
+        
+        equipo_jugo = st.checkbox("El equipo jugó esta semana")
         partidos = st.number_input("Partidos", min_value=0, max_value=10, value=0, step=1)
         minutos = st.number_input("Minutos", min_value=0, max_value=900, value=0, step=1)
 
@@ -906,6 +916,7 @@ elif page == pages[1]:
                     "nombre": jugador_nombre,  # ✅ GUARDA NOMBRE
                     "week_start": week_start,
                     "week_end": week_end,
+                    "equipo_jugo": bool(equipo_jugo),
                     "partidos": int(partidos),
                     "minutos": int(minutos),
                     "goles_marcados": int(goles_marcados),
@@ -932,7 +943,7 @@ elif page == pages[1]:
         df_player = df_player.sort_values("week_start", ascending=False)
 
         show_cols = [
-            "nombre",
+            "nombre", "equipo_jugo",
             "week_start", "week_end",
             "partidos", "minutos",
             "goles_marcados", "goles_encajados",
